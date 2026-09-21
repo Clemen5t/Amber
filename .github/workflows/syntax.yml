@@ -13,4 +13,4 @@ jobs:
         with:
           python-version: "3.12"
       - name: Compile Python sources
-        run: python -m compileall -q amber training tokenizer inference tests amber_app.py
+        run: python -m compileall -q amber training tokenizer inference evaluation tests amber_app.py
