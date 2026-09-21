@@ -54,6 +54,11 @@ from training.data_v02 import (
     CACHE_META as V02_CACHE_META,
     load_cache_metadata as load_v02_cache_metadata,
 )
+from teacher.curriculum import (
+    MANIFEST_FILE as TEACHER_MANIFEST_FILE,
+    REMEDIAL_FILE as TEACHER_REMEDIAL_FILE,
+    load_manifest as load_teacher_manifest,
+)
 from inference.chat import generate_reply
 
 
@@ -131,6 +136,28 @@ V02_PAUSE_FILE = (
     / ".v02_pause_requested"
 )
 
+TEACHER_STATUS_FILE = (
+    CHECKPOINTS
+    / "amber_teacher_status.json"
+)
+
+TEACHER_CHECKPOINT = (
+    CHECKPOINTS
+    / "amber_teacher_latest.pt"
+)
+
+TEACHER_STOP_FILE = (
+    ROOT
+    / "training"
+    / ".teacher_stop_requested"
+)
+
+TEACHER_PAUSE_FILE = (
+    ROOT
+    / "training"
+    / ".teacher_pause_requested"
+)
+
 
 class AmberApp(tk.Tk):
 
@@ -138,7 +165,7 @@ class AmberApp(tk.Tk):
         super().__init__()
 
         self.title(
-            "Amber 0.2.0"
+            "Amber 0.2.1"
         )
 
         self.geometry(
@@ -230,6 +257,20 @@ class AmberApp(tk.Tk):
         )
 
         self.v02_paused = False
+
+        self.teacher_epochs = tk.StringVar(
+            value="3"
+        )
+
+        self.teacher_learning_rate = tk.StringVar(
+            value="0.00002"
+        )
+
+        self.teacher_mode = tk.StringVar(
+            value="FULL"
+        )
+
+        self.teacher_paused = False
 
         self.current_step = 0
         self.current_loss = None
@@ -428,7 +469,7 @@ class AmberApp(tk.Tk):
 
         ttk.Label(
             root,
-            text="AI Control Center · Amber Model 0.2.0",
+            text="AI Control Center · Amber Model 0.2.1",
             style="Subtitle.TLabel"
         ).pack(
             anchor="w",
@@ -476,6 +517,10 @@ class AmberApp(tk.Tk):
             self.notebook
         )
 
+        self.teacher_tab = ttk.Frame(
+            self.notebook
+        )
+
         self.notebook.add(
             self.dashboard_tab,
             text="Dashboard"
@@ -516,6 +561,11 @@ class AmberApp(tk.Tk):
             text="Amber 0.2"
         )
 
+        self.notebook.add(
+            self.teacher_tab,
+            text="Amber Teacher"
+        )
+
         self._build_dashboard()
         self._build_chat()
         self._build_training()
@@ -524,6 +574,7 @@ class AmberApp(tk.Tk):
         self._build_v01()
         self._build_v01_evaluation()
         self._build_v02()
+        self._build_teacher()
 
     # ========================================================
     # DASHBOARD
@@ -642,7 +693,7 @@ class AmberApp(tk.Tk):
         )
 
         self.log(
-            "Amber Control Center 0.2.0 ready."
+            "Amber Control Center 0.2.1 ready."
         )
 
     def _timestamp(self):
@@ -3103,7 +3154,7 @@ class AmberApp(tk.Tk):
 
         ttk.Label(
             self.v01_tab,
-            text="Amber 0.2.0",
+            text="Amber 0.2.1",
             style="Title.TLabel"
         ).pack(
             anchor="w",
@@ -4907,6 +4958,603 @@ class AmberApp(tk.Tk):
             )
 
     # ========================================================
+    # AMBER TEACHER
+    # ========================================================
+
+    def _build_teacher(self):
+
+        ttk.Label(
+            self.teacher_tab,
+            text="Amber Teacher · Professeur & SFT",
+            style="Title.TLabel"
+        ).pack(
+            anchor="w",
+            pady=(18, 4)
+        )
+
+        ttk.Label(
+            self.teacher_tab,
+            text=(
+                "Cours créés par ChatGPT/OpenAI pour apprendre à Amber à répondre, "
+                "raisonner simplement, corriger le français et reconnaître son identité. "
+                "Le SFT calcule la loss uniquement sur la réponse du professeur."
+            ),
+            style="Subtitle.TLabel"
+        ).pack(
+            anchor="w",
+            pady=(0, 10)
+        )
+
+        cards = ttk.Frame(
+            self.teacher_tab
+        )
+
+        cards.pack(
+            fill="x",
+            pady=(0, 10)
+        )
+
+        self.teacher_examples_value = self._card(
+            cards,
+            "COURS"
+        )
+
+        self.teacher_exam_value = self._card(
+            cards,
+            "EXAMEN"
+        )
+
+        self.teacher_epoch_value = self._card(
+            cards,
+            "EPOCH"
+        )
+
+        self.teacher_loss_value = self._card(
+            cards,
+            "SFT LOSS"
+        )
+
+        self.teacher_score_value = self._card(
+            cards,
+            "SCORE EXAMEN"
+        )
+
+        self.teacher_remedial_value = self._card(
+            cards,
+            "RATTRAPAGE"
+        )
+
+        row = ttk.Frame(
+            self.teacher_tab
+        )
+
+        row.pack(
+            fill="x",
+            pady=5
+        )
+
+        ttk.Button(
+            row,
+            text="1 · Construire les cours",
+            command=self.build_teacher_dataset
+        ).pack(
+            side="left",
+            padx=(0, 7)
+        )
+
+        ttk.Label(
+            row,
+            text="Epochs :"
+        ).pack(
+            side="left",
+            padx=(10, 3)
+        )
+
+        ttk.Entry(
+            row,
+            textvariable=self.teacher_epochs,
+            width=5
+        ).pack(
+            side="left"
+        )
+
+        ttk.Label(
+            row,
+            text="LR :"
+        ).pack(
+            side="left",
+            padx=(10, 3)
+        )
+
+        ttk.Entry(
+            row,
+            textvariable=self.teacher_learning_rate,
+            width=10
+        ).pack(
+            side="left"
+        )
+
+        for mode in (
+            "ECO",
+            "BALANCED",
+            "FULL"
+        ):
+            ttk.Radiobutton(
+                row,
+                text=mode,
+                variable=self.teacher_mode,
+                value=mode
+            ).pack(
+                side="left",
+                padx=(10, 0)
+            )
+
+        actions = ttk.Frame(
+            self.teacher_tab
+        )
+
+        actions.pack(
+            fill="x",
+            pady=5
+        )
+
+        ttk.Button(
+            actions,
+            text="2 · Entraîner avec le professeur",
+            command=self.start_teacher_training
+        ).pack(
+            side="left",
+            padx=(0, 7)
+        )
+
+        self.teacher_pause_button = ttk.Button(
+            actions,
+            text="Pause",
+            command=self.toggle_teacher_pause
+        )
+
+        self.teacher_pause_button.pack(
+            side="left",
+            padx=7
+        )
+
+        ttk.Button(
+            actions,
+            text="Sauvegarder et arrêter",
+            command=self.stop_teacher_training
+        ).pack(
+            side="left",
+            padx=7
+        )
+
+        ttk.Button(
+            actions,
+            text="3 · Faire passer l'examen",
+            command=self.run_teacher_exam
+        ).pack(
+            side="left",
+            padx=7
+        )
+
+        ttk.Label(
+            self.teacher_tab,
+            text=(
+                "Boucle : cours → SFT → examen inédit → erreurs → rattrapage → "
+                "nouveau SFT. Les exemples de rattrapage sont ajoutés automatiquement "
+                "au prochain entraînement."
+            ),
+            style="Subtitle.TLabel"
+        ).pack(
+            anchor="w",
+            pady=(5, 5)
+        )
+
+        self.teacher_status_label = ttk.Label(
+            self.teacher_tab,
+            text="Prêt"
+        )
+
+        self.teacher_status_label.pack(
+            anchor="w",
+            pady=(2, 4)
+        )
+
+        self.teacher_progress = ttk.Progressbar(
+            self.teacher_tab,
+            orient="horizontal",
+            mode="determinate"
+        )
+
+        self.teacher_progress.pack(
+            fill="x",
+            pady=(2, 4)
+        )
+
+        self.teacher_metrics = ttk.Label(
+            self.teacher_tab,
+            text="Step : - | VRAM : - | ETA : -"
+        )
+
+        self.teacher_metrics.pack(
+            anchor="w",
+            pady=(0, 5)
+        )
+
+        self.teacher_console = ScrolledText(
+            self.teacher_tab,
+            bg="#0b0b0f",
+            fg="#e5e5ea",
+            insertbackground="white",
+            relief="flat",
+            font=("Consolas", 9),
+            height=17
+        )
+
+        self.teacher_console.pack(
+            fill="both",
+            expand=True
+        )
+
+        self.refresh_teacher_status()
+
+    def _read_teacher_status(self):
+
+        if not TEACHER_STATUS_FILE.exists():
+            return {}
+
+        try:
+            return json.loads(
+                TEACHER_STATUS_FILE.read_text(
+                    encoding="utf-8"
+                )
+            )
+
+        except Exception:
+            return {}
+
+    def _teacher_log(
+        self,
+        text
+    ):
+        self.teacher_console.insert(
+            "end",
+            self._timestamped_line(
+                str(text)
+            )
+        )
+
+        self.teacher_console.see(
+            "end"
+        )
+
+    def refresh_teacher_status(self):
+
+        manifest = load_teacher_manifest()
+        status = self._read_teacher_status()
+
+        self.teacher_examples_value.config(
+            text=(
+                str(
+                    int(
+                        manifest.get(
+                            "train_examples",
+                            0
+                        )
+                    )
+                )
+                if manifest
+                else "À construire"
+            )
+        )
+
+        self.teacher_exam_value.config(
+            text=(
+                str(
+                    int(
+                        manifest.get(
+                            "exam_examples",
+                            0
+                        )
+                    )
+                )
+                if manifest
+                else "-"
+            )
+        )
+
+        epoch = int(
+            status.get(
+                "epoch",
+                0
+            )
+        )
+
+        epochs = int(
+            status.get(
+                "epochs",
+                0
+            )
+        )
+
+        self.teacher_epoch_value.config(
+            text=(
+                f"{epoch}/{epochs}"
+                if epochs
+                else "-"
+            )
+        )
+
+        loss = status.get(
+            "train_loss"
+        )
+
+        self.teacher_loss_value.config(
+            text=(
+                f"{float(loss):.4f}"
+                if loss is not None
+                else "-"
+            )
+        )
+
+        remedial = 0
+
+        if TEACHER_REMEDIAL_FILE.exists():
+            try:
+                with TEACHER_REMEDIAL_FILE.open(
+                    "r",
+                    encoding="utf-8"
+                ) as handle:
+                    remedial = sum(
+                        1
+                        for line in handle
+                        if line.strip()
+                    )
+            except Exception:
+                remedial = 0
+
+        self.teacher_remedial_value.config(
+            text=str(
+                remedial
+            )
+        )
+
+        if not manifest:
+            self.teacher_status_label.config(
+                text="Étape 1 : construis les cours du professeur."
+            )
+
+        elif not V02_CHECKPOINT.exists():
+            self.teacher_status_label.config(
+                text=(
+                    "Cours prêts. Termine Amber 0.2 avant de lancer le SFT Teacher."
+                )
+            )
+
+        elif not TEACHER_CHECKPOINT.exists():
+            self.teacher_status_label.config(
+                text="Cours prêts · checkpoint Amber 0.2 détecté · SFT disponible."
+            )
+
+        else:
+            self.teacher_status_label.config(
+                text="Amber Teacher entraînée · examen disponible."
+            )
+
+    def build_teacher_dataset(self):
+
+        if (
+            self.process is not None
+            and self.process.poll() is None
+        ):
+            messagebox.showwarning(
+                "Amber Teacher",
+                "Une tâche Amber est déjà en cours."
+            )
+            return
+
+        self.teacher_status_label.config(
+            text="Construction des cours du professeur..."
+        )
+
+        self._run_command(
+            [
+                sys.executable,
+                "-m",
+                "teacher.build",
+            ]
+        )
+
+    def start_teacher_training(self):
+
+        if (
+            self.process is not None
+            and self.process.poll() is None
+        ):
+            messagebox.showwarning(
+                "Amber Teacher",
+                "Une tâche Amber est déjà en cours."
+            )
+            return
+
+        if not TEACHER_MANIFEST_FILE.exists():
+            messagebox.showwarning(
+                "Amber Teacher",
+                "Construis d'abord les cours."
+            )
+            return
+
+        if not V02_CHECKPOINT.exists():
+            messagebox.showwarning(
+                "Amber Teacher",
+                (
+                    "Le SFT Teacher est volontairement bloqué avant Amber 0.2.\n\n"
+                    "Termine d'abord le pré-entraînement propre 0.2 afin de ne pas "
+                    "apprendre un comportement d'assistant sur la base bruitée 0.1."
+                )
+            )
+            return
+
+        try:
+            epochs = int(
+                self.teacher_epochs.get()
+            )
+
+            lr = float(
+                self.teacher_learning_rate.get()
+            )
+
+        except ValueError:
+            messagebox.showerror(
+                "Amber Teacher",
+                "Epochs ou learning rate invalide."
+            )
+            return
+
+        for path in (
+            TEACHER_STOP_FILE,
+            TEACHER_PAUSE_FILE
+        ):
+            try:
+                if path.exists():
+                    path.unlink()
+            except Exception:
+                pass
+
+        self.teacher_paused = False
+
+        self.teacher_pause_button.config(
+            text="Pause"
+        )
+
+        self.teacher_status_label.config(
+            text="Amber suit les cours du professeur..."
+        )
+
+        self._run_command(
+            [
+                sys.executable,
+                "-m",
+                "training.train_teacher",
+                "--mode",
+                self.teacher_mode.get().lower(),
+                "--epochs",
+                str(
+                    max(
+                        1,
+                        epochs
+                    )
+                ),
+                "--learning-rate",
+                str(
+                    max(
+                        1e-7,
+                        lr
+                    )
+                ),
+            ]
+        )
+
+    def toggle_teacher_pause(self):
+
+        if (
+            self.process is None
+            or self.process.poll() is not None
+        ):
+            return
+
+        try:
+            if not self.teacher_paused:
+                TEACHER_PAUSE_FILE.write_text(
+                    "pause",
+                    encoding="utf-8"
+                )
+
+                self.teacher_paused = True
+
+                self.teacher_pause_button.config(
+                    text="Reprendre"
+                )
+
+                self.teacher_status_label.config(
+                    text="Pause Teacher demandée..."
+                )
+
+            else:
+                if TEACHER_PAUSE_FILE.exists():
+                    TEACHER_PAUSE_FILE.unlink()
+
+                self.teacher_paused = False
+
+                self.teacher_pause_button.config(
+                    text="Pause"
+                )
+
+                self.teacher_status_label.config(
+                    text="Reprise Teacher..."
+                )
+
+        except Exception as exc:
+            messagebox.showerror(
+                "Amber Teacher",
+                str(exc)
+            )
+
+    def stop_teacher_training(self):
+
+        if (
+            self.process is None
+            or self.process.poll() is not None
+        ):
+            return
+
+        try:
+            TEACHER_STOP_FILE.write_text(
+                "stop",
+                encoding="utf-8"
+            )
+
+            self.teacher_status_label.config(
+                text="Sauvegarde Teacher et arrêt..."
+            )
+
+        except Exception as exc:
+            messagebox.showerror(
+                "Amber Teacher",
+                str(exc)
+            )
+
+    def run_teacher_exam(self):
+
+        if (
+            self.process is not None
+            and self.process.poll() is None
+        ):
+            messagebox.showwarning(
+                "Amber Teacher",
+                "Une tâche Amber est déjà en cours."
+            )
+            return
+
+        if not TEACHER_CHECKPOINT.exists():
+            messagebox.showwarning(
+                "Amber Teacher",
+                "Entraîne d'abord Amber avec les cours."
+            )
+            return
+
+        self.teacher_status_label.config(
+            text="Amber passe l'examen du professeur..."
+        )
+
+        self._run_command(
+            [
+                sys.executable,
+                "-m",
+                "teacher.exam",
+            ]
+        )
+
+    # ========================================================
     # CHECKPOINTS
     # ========================================================
 
@@ -5428,6 +6076,164 @@ class AmberApp(tk.Tk):
                 except Exception as exc:
                     self.v01_eval_status.config(
                         text=f"Erreur lecture évaluation : {exc}"
+                    )
+
+            if (
+                hasattr(
+                    self,
+                    "teacher_console"
+                )
+                and (
+                    "TEACHER" in line
+                    or "AMBER TEACHER" in line
+                )
+            ):
+                self._teacher_log(
+                    line
+                )
+
+            teacher_match = re.search(
+                (
+                    r"\[TEACHER step=(\d+)\]\s+"
+                    r"epoch=(\d+)/(\d+)\s+\|\s+"
+                    r"loss=([0-9.]+)\s+\|\s+"
+                    r"progress=([0-9.]+)%\s+\|\s+"
+                    r"peak=([0-9.]+)\s+GB\s+\|\s+"
+                    r"reserved=([0-9.]+)\s+GB\s+\|\s+"
+                    r"eta=([0-9.]+)s"
+                ),
+                line
+            )
+
+            if teacher_match:
+                step = int(
+                    teacher_match.group(1)
+                )
+
+                epoch = int(
+                    teacher_match.group(2)
+                )
+
+                epochs = int(
+                    teacher_match.group(3)
+                )
+
+                loss = float(
+                    teacher_match.group(4)
+                )
+
+                progress = float(
+                    teacher_match.group(5)
+                )
+
+                peak = float(
+                    teacher_match.group(6)
+                )
+
+                reserved = float(
+                    teacher_match.group(7)
+                )
+
+                eta = float(
+                    teacher_match.group(8)
+                )
+
+                self.teacher_epoch_value.config(
+                    text=f"{epoch}/{epochs}"
+                )
+
+                self.teacher_loss_value.config(
+                    text=f"{loss:.4f}"
+                )
+
+                self.teacher_progress.configure(
+                    maximum=100.0,
+                    value=progress
+                )
+
+                self.teacher_metrics.config(
+                    text=(
+                        f"Step : {step:,} | "
+                        f"VRAM : {peak:.2f} GB pic / "
+                        f"{reserved:.2f} GB réservée | "
+                        f"ETA : {eta:.0f}s"
+                    )
+                )
+
+                self.teacher_status_label.config(
+                    text=(
+                        "Cours en cours — "
+                        f"{progress:.2f} %"
+                    )
+                )
+
+            if "[TEACHER DATASET COMPLETE]" in line:
+                self.teacher_status_label.config(
+                    text="Cours du professeur construits."
+                )
+                self.refresh_teacher_status()
+
+            if "[TEACHER TRAINING COMPLETE]" in line:
+                self.teacher_status_label.config(
+                    text="Cours terminés · Amber est prête pour l'examen."
+                )
+                self.teacher_progress.configure(
+                    maximum=100.0,
+                    value=100.0
+                )
+                self.refresh_teacher_status()
+
+            if "[TEACHER] Arrêt propre terminé." in line:
+                self.teacher_status_label.config(
+                    text="Amber Teacher arrêté proprement."
+                )
+                self.refresh_teacher_status()
+
+            if line.startswith(
+                "[TEACHER EXAM JSON] "
+            ):
+                try:
+                    payload = json.loads(
+                        line.split(
+                            " ",
+                            3
+                        )[3]
+                    )
+
+                    score = float(
+                        payload.get(
+                            "score_percent",
+                            0.0
+                        )
+                    )
+
+                    remedial = int(
+                        payload.get(
+                            "remedial_examples",
+                            0
+                        )
+                    )
+
+                    self.teacher_score_value.config(
+                        text=f"{score:.1f} %"
+                    )
+
+                    self.teacher_remedial_value.config(
+                        text=str(
+                            remedial
+                        )
+                    )
+
+                    self.teacher_status_label.config(
+                        text=(
+                            f"Examen : {score:.1f} % · "
+                            f"{remedial} leçons de rattrapage créées."
+                        )
+                    )
+
+                except Exception as exc:
+                    self.teacher_status_label.config(
+                        text=f"Erreur lecture examen : {exc}"
                     )
 
             if (
@@ -5964,6 +6770,15 @@ class AmberApp(tk.Tk):
                     self.after(
                         700,
                         self.refresh_v02_status
+                    )
+
+                if hasattr(
+                    self,
+                    "teacher_status_label"
+                ):
+                    self.after(
+                        800,
+                        self.refresh_teacher_status
                     )
 
                 self.paused = False
