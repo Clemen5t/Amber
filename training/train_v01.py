@@ -836,6 +836,20 @@ def main():
 
         model.train()
 
+        lr = learning_rate(
+            tokens_seen=min(
+                target_tokens,
+                tokens_seen + effective_tokens
+            ),
+            target_tokens=target_tokens,
+            peak_lr=profile[
+                "learning_rate"
+            ],
+        )
+
+        for group in optimizer.param_groups:
+            group["lr"] = lr
+
         optimizer.zero_grad(
             set_to_none=True
         )
@@ -934,17 +948,6 @@ def main():
             accumulated_loss
             / actual_micro_steps
         )
-
-        lr = learning_rate(
-            tokens_seen=tokens_seen,
-            target_tokens=target_tokens,
-            peak_lr=profile[
-                "learning_rate"
-            ],
-        )
-
-        for group in optimizer.param_groups:
-            group["lr"] = lr
 
         if (
             step == 1
