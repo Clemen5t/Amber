@@ -1,4 +1,5 @@
 import os
+import json
 import queue
 import re
 import subprocess
@@ -13,6 +14,14 @@ from tkinter.scrolledtext import ScrolledText
 import torch
 
 from amber.model import AmberConfig, AmberModel
+from amber.model_v01 import (
+    AmberV01Config,
+    estimate_v01_parameter_count,
+)
+from training.data_v01 import (
+    CACHE_META as V01_CACHE_META,
+    load_cache_metadata as load_v01_cache_metadata,
+)
 from amber.dataset_manager import (
     SOURCE_CATALOG,
     PREPARED_TRAIN_FILE,
@@ -64,6 +73,28 @@ PAUSE_FILE = (
     / ".pause_requested"
 )
 
+V01_STOP_FILE = (
+    ROOT
+    / "training"
+    / ".v01_stop_requested"
+)
+
+V01_PAUSE_FILE = (
+    ROOT
+    / "training"
+    / ".v01_pause_requested"
+)
+
+V01_STATUS_FILE = (
+    CHECKPOINTS
+    / "amber_v01_status.json"
+)
+
+V01_CHECKPOINT = (
+    CHECKPOINTS
+    / "amber_v01_latest.pt"
+)
+
 
 class AmberApp(tk.Tk):
 
@@ -71,7 +102,7 @@ class AmberApp(tk.Tk):
         super().__init__()
 
         self.title(
-            "Amber 0.0.7"
+            "Amber 0.1.0"
         )
 
         self.geometry(
@@ -98,6 +129,14 @@ class AmberApp(tk.Tk):
             value="500"
         )
 
+        self.v01_mode = tk.StringVar(
+            value="BALANCED"
+        )
+
+        self.v01_target_tokens = tk.StringVar(
+            value="100000000"
+        )
+
         self.current_step = 0
         self.current_loss = None
         self.current_speed = 0.0
@@ -106,6 +145,7 @@ class AmberApp(tk.Tk):
         self.current_governor = "BALANCED"
 
         self.paused = False
+        self.v01_paused = False
         self.dataset_busy = False
         self.dataset_cancel_event = threading.Event()
 
@@ -294,7 +334,7 @@ class AmberApp(tk.Tk):
 
         ttk.Label(
             root,
-            text="AI Control Center · Amber Model 0.0.7",
+            text="AI Control Center · Amber Model 0.1.0",
             style="Subtitle.TLabel"
         ).pack(
             anchor="w",
@@ -330,6 +370,10 @@ class AmberApp(tk.Tk):
             self.notebook
         )
 
+        self.v01_tab = ttk.Frame(
+            self.notebook
+        )
+
         self.notebook.add(
             self.dashboard_tab,
             text="Dashboard"
@@ -355,11 +399,17 @@ class AmberApp(tk.Tk):
             text="Dataset"
         )
 
+        self.notebook.add(
+            self.v01_tab,
+            text="Amber 0.1"
+        )
+
         self._build_dashboard()
         self._build_chat()
         self._build_training()
         self._build_checkpoints()
         self._build_dataset()
+        self._build_v01()
 
     # ========================================================
     # DASHBOARD
@@ -2440,6 +2490,604 @@ class AmberApp(tk.Tk):
         )
 
     # ========================================================
+    # AMBER 0.1
+    # ========================================================
+
+    def _build_v01(self):
+
+        ttk.Label(
+            self.v01_tab,
+            text="Amber 0.1.0",
+            style="Title.TLabel"
+        ).pack(
+            anchor="w",
+            pady=(18, 4)
+        )
+
+        ttk.Label(
+            self.v01_tab,
+            text=(
+                "Premier modèle Amber ~100 M paramètres, "
+                "initialisé depuis zéro avec RoPE, GQA, RMSNorm et SwiGLU."
+            ),
+            style="Subtitle.TLabel"
+        ).pack(
+            anchor="w",
+            pady=(0, 12)
+        )
+
+        cards = ttk.Frame(
+            self.v01_tab
+        )
+
+        cards.pack(
+            fill="x",
+            pady=(0, 12)
+        )
+
+        self.v01_model_value = self._card(
+            cards,
+            "PARAMÈTRES"
+        )
+
+        self.v01_vocab_value = self._card(
+            cards,
+            "VOCAB"
+        )
+
+        self.v01_context_value = self._card(
+            cards,
+            "CONTEXTE"
+        )
+
+        self.v01_cache_value = self._card(
+            cards,
+            "TOKENS DATASET"
+        )
+
+        self.v01_seen_value = self._card(
+            cards,
+            "TOKENS VUS"
+        )
+
+        self.v01_loss_value = self._card(
+            cards,
+            "LOSS / VAL"
+        )
+
+        controls = ttk.Frame(
+            self.v01_tab
+        )
+
+        controls.pack(
+            fill="x",
+            pady=5
+        )
+
+        ttk.Button(
+            controls,
+            text="Construire cache tokens",
+            command=self.build_v01_cache
+        ).pack(
+            side="left",
+            padx=(0, 7)
+        )
+
+        ttk.Button(
+            controls,
+            text="Tester Amber 0.1",
+            command=self.test_v01_model
+        ).pack(
+            side="left",
+            padx=7
+        )
+
+        ttk.Label(
+            controls,
+            text="Cible tokens :"
+        ).pack(
+            side="left",
+            padx=(18, 4)
+        )
+
+        ttk.Entry(
+            controls,
+            textvariable=self.v01_target_tokens,
+            width=14
+        ).pack(
+            side="left",
+            padx=(0, 8)
+        )
+
+        mode_row = ttk.Frame(
+            self.v01_tab
+        )
+
+        mode_row.pack(
+            fill="x",
+            pady=6
+        )
+
+        ttk.Label(
+            mode_row,
+            text="Profil GPU :"
+        ).pack(
+            side="left",
+            padx=(0, 10)
+        )
+
+        for mode in (
+            "ECO",
+            "BALANCED",
+            "FULL"
+        ):
+            ttk.Radiobutton(
+                mode_row,
+                text=mode,
+                variable=self.v01_mode,
+                value=mode
+            ).pack(
+                side="left",
+                padx=(0, 14)
+            )
+
+        ttk.Button(
+            mode_row,
+            text="Démarrer pré-entraînement",
+            command=self.start_v01_training
+        ).pack(
+            side="left",
+            padx=(15, 7)
+        )
+
+        self.v01_pause_button = ttk.Button(
+            mode_row,
+            text="Pause",
+            command=self.toggle_v01_pause
+        )
+
+        self.v01_pause_button.pack(
+            side="left",
+            padx=7
+        )
+
+        ttk.Button(
+            mode_row,
+            text="Sauvegarder et arrêter",
+            command=self.stop_v01_training
+        ).pack(
+            side="left",
+            padx=7
+        )
+
+        self.v01_status_label = ttk.Label(
+            self.v01_tab,
+            text="Prêt"
+        )
+
+        self.v01_status_label.pack(
+            anchor="w",
+            pady=(7, 3)
+        )
+
+        self.v01_progress = ttk.Progressbar(
+            self.v01_tab,
+            orient="horizontal",
+            mode="determinate"
+        )
+
+        self.v01_progress.pack(
+            fill="x",
+            pady=(2, 3)
+        )
+
+        self.v01_progress_text = ttk.Label(
+            self.v01_tab,
+            text="0 / 100.0 M tokens"
+        )
+
+        self.v01_progress_text.pack(
+            anchor="w"
+        )
+
+        self.v01_metrics = ttk.Label(
+            self.v01_tab,
+            text="Vitesse : - | VRAM : - | ETA : -"
+        )
+
+        self.v01_metrics.pack(
+            anchor="w",
+            pady=(2, 7)
+        )
+
+        self.v01_console = ScrolledText(
+            self.v01_tab,
+            bg="#0b0b0f",
+            fg="#e5e5ea",
+            insertbackground="white",
+            relief="flat",
+            font=("Consolas", 9),
+            height=16
+        )
+
+        self.v01_console.pack(
+            fill="both",
+            expand=True
+        )
+
+        self.refresh_v01_status()
+
+    def _v01_log(
+        self,
+        text
+    ):
+        self.v01_console.insert(
+            "end",
+            str(text) + "\n"
+        )
+
+        self.v01_console.see(
+            "end"
+        )
+
+    def _read_v01_status_file(self):
+
+        if not V01_STATUS_FILE.exists():
+            return {}
+
+        try:
+            return json.loads(
+                V01_STATUS_FILE.read_text(
+                    encoding="utf-8"
+                )
+            )
+        except Exception:
+            return {}
+
+    def refresh_v01_status(self):
+
+        tok = tokenizer_status()
+
+        vocab_size = (
+            int(tok["vocab_size"])
+            if tok.get("exists")
+            and tok.get("vocab_size")
+            else 32000
+        )
+
+        config = AmberV01Config(
+            vocab_size=vocab_size
+        )
+
+        params = estimate_v01_parameter_count(
+            config
+        )
+
+        cache = load_v01_cache_metadata()
+        status = self._read_v01_status_file()
+
+        self.v01_model_value.config(
+            text=f"{params / 1_000_000:.2f} M"
+        )
+
+        self.v01_vocab_value.config(
+            text=f"{vocab_size:,}"
+        )
+
+        self.v01_context_value.config(
+            text=str(
+                config.context_length
+            )
+        )
+
+        train_tokens = 0
+
+        if cache:
+            train_tokens = int(
+                cache.get(
+                    "train",
+                    {}
+                ).get(
+                    "tokens",
+                    0
+                )
+            )
+
+        self.v01_cache_value.config(
+            text=(
+                format_tokens(train_tokens)
+                if train_tokens
+                else "À construire"
+            )
+        )
+
+        tokens_seen = int(
+            status.get(
+                "tokens_seen",
+                0
+            )
+        )
+
+        self.v01_seen_value.config(
+            text=format_tokens(
+                tokens_seen
+            )
+        )
+
+        train_loss = status.get(
+            "train_loss"
+        )
+
+        val_loss = status.get(
+            "val_loss"
+        )
+
+        if train_loss is None:
+            loss_text = "-"
+        else:
+            loss_text = (
+                f"{float(train_loss):.3f} / "
+                + (
+                    f"{float(val_loss):.3f}"
+                    if val_loss is not None
+                    else "-"
+                )
+            )
+
+        self.v01_loss_value.config(
+            text=loss_text
+        )
+
+        try:
+            target = int(
+                self.v01_target_tokens.get()
+            )
+        except Exception:
+            target = 100_000_000
+
+        self.v01_progress.configure(
+            maximum=max(
+                target,
+                1
+            ),
+            value=min(
+                tokens_seen,
+                target
+            )
+        )
+
+        self.v01_progress_text.config(
+            text=(
+                f"{format_tokens(tokens_seen)} / "
+                f"{format_tokens(target)} tokens"
+            )
+        )
+
+        if cache:
+            self.v01_status_label.config(
+                text=(
+                    "Cache prêt — "
+                    f"{cache.get('train', {}).get('tokens', 0):,} "
+                    "tokens train exacts"
+                )
+            )
+        else:
+            self.v01_status_label.config(
+                text=(
+                    "Construis d'abord le cache tokens BPE exact."
+                )
+            )
+
+    def build_v01_cache(self):
+
+        if (
+            self.process is not None
+            and self.process.poll() is None
+        ):
+            messagebox.showwarning(
+                "Amber 0.1",
+                "Une tâche Amber est déjà en cours."
+            )
+            return
+
+        tok = tokenizer_status()
+
+        if (
+            not tok.get("exists")
+            or int(
+                tok.get(
+                    "vocab_size",
+                    0
+                )
+            ) < 1000
+        ):
+            messagebox.showwarning(
+                "Amber 0.1",
+                (
+                    "Le tokenizer 32k Amber n'est pas prêt. "
+                    "Utilise d'abord Préparer Amber 0.1 dans Dataset."
+                )
+            )
+            return
+
+        self.v01_console.delete(
+            "1.0",
+            "end"
+        )
+
+        self.v01_status_label.config(
+            text="Construction du cache tokens..."
+        )
+
+        self._run_command(
+            [
+                sys.executable,
+                "-m",
+                "training.data_v01",
+                "--build"
+            ]
+        )
+
+    def test_v01_model(self):
+
+        tok = tokenizer_status()
+
+        if not tok.get("exists"):
+            messagebox.showwarning(
+                "Amber 0.1",
+                "Tokenizer Amber absent."
+            )
+            return
+
+        self.v01_status_label.config(
+            text="Smoke test GPU..."
+        )
+
+        self._run_command(
+            [
+                sys.executable,
+                "-m",
+                "tests.test_v01"
+            ]
+        )
+
+    def start_v01_training(self):
+
+        if (
+            self.process is not None
+            and self.process.poll() is None
+        ):
+            messagebox.showwarning(
+                "Amber 0.1",
+                "Une tâche Amber est déjà en cours."
+            )
+            return
+
+        cache = load_v01_cache_metadata()
+
+        if not cache:
+            messagebox.showwarning(
+                "Amber 0.1",
+                "Construis d'abord le cache tokens."
+            )
+            return
+
+        try:
+            target = int(
+                self.v01_target_tokens.get()
+            )
+        except ValueError:
+            messagebox.showerror(
+                "Amber 0.1",
+                "La cible tokens doit être un entier."
+            )
+            return
+
+        if target <= 0:
+            return
+
+        for control_file in (
+            V01_STOP_FILE,
+            V01_PAUSE_FILE
+        ):
+            try:
+                if control_file.exists():
+                    control_file.unlink()
+            except Exception:
+                pass
+
+        self.v01_paused = False
+
+        self.v01_pause_button.config(
+            text="Pause"
+        )
+
+        self.v01_status_label.config(
+            text="Pré-entraînement en cours..."
+        )
+
+        self._run_command(
+            [
+                sys.executable,
+                "-m",
+                "training.train_v01",
+                "--mode",
+                self.v01_mode.get().lower(),
+                "--target-tokens",
+                str(target)
+            ]
+        )
+
+    def toggle_v01_pause(self):
+
+        if (
+            self.process is None
+            or self.process.poll() is not None
+        ):
+            return
+
+        try:
+            if not self.v01_paused:
+                V01_PAUSE_FILE.write_text(
+                    "pause",
+                    encoding="utf-8"
+                )
+
+                self.v01_paused = True
+
+                self.v01_pause_button.config(
+                    text="Reprendre"
+                )
+
+                self.v01_status_label.config(
+                    text="Pause demandée..."
+                )
+
+            else:
+                if V01_PAUSE_FILE.exists():
+                    V01_PAUSE_FILE.unlink()
+
+                self.v01_paused = False
+
+                self.v01_pause_button.config(
+                    text="Pause"
+                )
+
+                self.v01_status_label.config(
+                    text="Reprise..."
+                )
+
+        except Exception as exc:
+            messagebox.showerror(
+                "Amber 0.1",
+                str(exc)
+            )
+
+    def stop_v01_training(self):
+
+        if (
+            self.process is None
+            or self.process.poll() is not None
+        ):
+            return
+
+        try:
+            V01_STOP_FILE.write_text(
+                "stop",
+                encoding="utf-8"
+            )
+
+            self.v01_status_label.config(
+                text="Sauvegarde et arrêt..."
+            )
+
+        except Exception as exc:
+            messagebox.showerror(
+                "Amber 0.1",
+                str(exc)
+            )
+
+    # ========================================================
     # CHECKPOINTS
     # ========================================================
 
@@ -2845,6 +3493,122 @@ class AmberApp(tk.Tk):
                 line
             )
 
+            if (
+                hasattr(
+                    self,
+                    "v01_console"
+                )
+                and (
+                    "V01" in line
+                    or "CACHE" in line
+                    or "AMBER 0.1" in line
+                    or "Parameters" in line
+                    or "Tokenizer" in line
+                )
+            ):
+                self._v01_log(
+                    line
+                )
+
+            v01_match = re.search(
+                (
+                    r"\[V01 step=(\d+)\]\s+"
+                    r"loss=([0-9.]+)\s+\|\s+"
+                    r"val=([^\s]+)\s+\|\s+"
+                    r"tokens=([0-9,]+)/([0-9,]+)\s+\|\s+"
+                    r"speed=([0-9,]+)\s+tok/s\s+\|\s+"
+                    r"lr=([^\s]+)\s+\|\s+"
+                    r"vram=([0-9.]+)\s+GB\s+\|\s+"
+                    r"eta=([^\s]+)"
+                ),
+                line
+            )
+
+            if v01_match:
+                step = int(
+                    v01_match.group(1)
+                )
+
+                loss = float(
+                    v01_match.group(2)
+                )
+
+                val_text = v01_match.group(3)
+
+                tokens_seen = int(
+                    v01_match.group(4).replace(
+                        ",",
+                        ""
+                    )
+                )
+
+                target_tokens = int(
+                    v01_match.group(5).replace(
+                        ",",
+                        ""
+                    )
+                )
+
+                speed = int(
+                    v01_match.group(6).replace(
+                        ",",
+                        ""
+                    )
+                )
+
+                vram = float(
+                    v01_match.group(8)
+                )
+
+                eta = v01_match.group(9)
+
+                self.v01_seen_value.config(
+                    text=format_tokens(
+                        tokens_seen
+                    )
+                )
+
+                self.v01_loss_value.config(
+                    text=(
+                        f"{loss:.3f} / "
+                        f"{val_text}"
+                    )
+                )
+
+                self.v01_progress.configure(
+                    maximum=max(
+                        target_tokens,
+                        1
+                    ),
+                    value=min(
+                        tokens_seen,
+                        target_tokens
+                    )
+                )
+
+                self.v01_progress_text.config(
+                    text=(
+                        f"{format_tokens(tokens_seen)} / "
+                        f"{format_tokens(target_tokens)} tokens"
+                    )
+                )
+
+                self.v01_metrics.config(
+                    text=(
+                        f"Step : {step:,} | "
+                        f"Vitesse : {speed:,} tok/s | "
+                        f"VRAM : {vram:.2f} GB | "
+                        f"ETA : {eta}"
+                    )
+                )
+
+                self.v01_status_label.config(
+                    text=(
+                        f"Pré-entraînement — "
+                        f"{tokens_seen / target_tokens * 100:.2f} %"
+                    )
+                )
+
             match = re.search(
                 (
                     r"\[(\d{6})\]\s+"
@@ -3014,6 +3778,40 @@ class AmberApp(tk.Tk):
                     text="Objectif atteint"
                 )
 
+            if "[CACHE COMPLETE]" in line:
+                self.v01_status_label.config(
+                    text="Cache tokens construit."
+                )
+                self.refresh_v01_status()
+
+            if "[V01] En pause." in line:
+                self.v01_status_label.config(
+                    text="En pause"
+                )
+
+            if "[V01] Reprise." in line:
+                self.v01_status_label.config(
+                    text="Pré-entraînement en cours..."
+                )
+
+            if (
+                "[V01] Arrêt propre terminé."
+                in line
+            ):
+                self.v01_status_label.config(
+                    text="Arrêté proprement"
+                )
+                self.refresh_v01_status()
+
+            if (
+                "AMBER 0.1 PRETRAINING TARGET REACHED"
+                in line
+            ):
+                self.v01_status_label.config(
+                    text="Objectif atteint"
+                )
+                self.refresh_v01_status()
+
             if (
                 "[Process finished:"
                 in line
@@ -3022,6 +3820,15 @@ class AmberApp(tk.Tk):
                     300,
                     self.refresh_status
                 )
+
+                if hasattr(
+                    self,
+                    "v01_status_label"
+                ):
+                    self.after(
+                        500,
+                        self.refresh_v01_status
+                    )
 
                 self.paused = False
 
