@@ -41,12 +41,12 @@ if hasattr(sys.stderr, "reconfigure"):
 ROOT = Path(__file__).resolve().parents[1]
 CHECKPOINT_DIR = ROOT / "checkpoints"
 CHECKPOINT = CHECKPOINT_DIR / "amber_v02_latest.pt"
-BASE_CHECKPOINT = CHECKPOINT_DIR / "amber_v02_latest.pt"
+BASE_CHECKPOINT = CHECKPOINT_DIR / "amber_v01_latest.pt"
 STATUS_FILE = CHECKPOINT_DIR / "amber_v02_status.json"
 TEMP_CHECKPOINT = CHECKPOINT_DIR / "amber_v02_latest.tmp"
 STOP_FILE = ROOT / "training" / ".v02_stop_requested"
 PAUSE_FILE = ROOT / "training" / ".v02_pause_requested"
-AUTOTUNE_FILE = CHECKPOINT_DIR / "amber_v02_autotune.json"
+AUTOTUNE_FILE = CHECKPOINT_DIR / "amber_v01_autotune.json"
 
 
 PROFILES = {
