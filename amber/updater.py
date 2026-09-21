@@ -24,6 +24,7 @@ SOURCE_TARGETS = [
     "amber_app.py",
     "version.json",
     ".gitignore",
+    "requirements.txt",
     "data/train.txt",
 ]
 
