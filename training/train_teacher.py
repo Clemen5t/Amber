@@ -426,6 +426,7 @@ def save_status(
     examples,
     blocks,
     profile,
+    epoch_complete=False,
 ):
     CHECKPOINT_DIR.mkdir(
         parents=True,
@@ -439,6 +440,14 @@ def save_status(
         ),
         "epochs": int(
             epochs
+        ),
+        "completed_epochs": int(
+            epoch
+            if epoch_complete
+            else max(
+                0,
+                epoch - 1
+            )
         ),
         "step": int(
             step
@@ -540,18 +549,24 @@ def save_checkpoint(
     print(
         (
             "[TEACHER CHECKPOINT] "
-            f"epoch={epoch}/{epochs} | "
+            f"epoch={epoch}/{session_last_epoch} | "
             f"step={step:,}"
         ),
         flush=True,
     )
 
 
-def load_base_model(
+def load_training_model(
     *,
     device,
 ):
-    if not BASE_CHECKPOINT.exists():
+    source = (
+        CHECKPOINT
+        if CHECKPOINT.exists()
+        else BASE_CHECKPOINT
+    )
+
+    if not source.exists():
         raise FileNotFoundError(
             (
                 "Amber Teacher attend le checkpoint Amber 0.2. "
@@ -559,21 +574,32 @@ def load_base_model(
             )
         )
 
+    is_resume = (
+        source == CHECKPOINT
+    )
+
     print(
-        "[TEACHER] Chargement des poids Amber 0.2...",
+        (
+            "[TEACHER] "
+            + (
+                "Reprise du checkpoint Teacher..."
+                if is_resume
+                else "Chargement des poids Amber 0.2..."
+            )
+        ),
         flush=True,
     )
 
     try:
         payload = torch.load(
-            BASE_CHECKPOINT,
+            source,
             map_location="cpu",
             weights_only=False,
             mmap=True,
         )
     except TypeError:
         payload = torch.load(
-            BASE_CHECKPOINT,
+            source,
             map_location="cpu",
             weights_only=False,
         )
@@ -607,11 +633,35 @@ def load_base_model(
         device
     )
 
+    resume = {
+        "is_resume": is_resume,
+        "completed_epochs": int(
+            payload.get(
+                "completed_epochs",
+                0
+            )
+        ),
+        "step": int(
+            payload.get(
+                "step",
+                0
+            )
+        ),
+        "optimizer_state": (
+            payload.get(
+                "optimizer_state"
+            )
+            if is_resume
+            else None
+        ),
+    }
+
     del payload
 
     return (
         model,
         config,
+        resume,
     )
 
 
@@ -734,7 +784,7 @@ def main():
         device
     )
 
-    model, config = load_base_model(
+    model, config, resume = load_training_model(
         device=device
     )
 
@@ -748,6 +798,29 @@ def main():
         eps=1e-8,
         weight_decay=0.05,
     )
+
+    if resume[
+        "optimizer_state"
+    ] is not None:
+        optimizer.load_state_dict(
+            resume[
+                "optimizer_state"
+            ]
+        )
+
+        for group in optimizer.param_groups:
+            group[
+                "lr"
+            ] = learning_rate
+
+        print(
+            (
+                "[TEACHER] Optimizer Teacher restauré | "
+                f"step={resume['step']:,} | "
+                f"epochs terminées={resume['completed_epochs']}."
+            ),
+            flush=True,
+        )
 
     dtype = amp_dtype()
 
@@ -771,7 +844,28 @@ def main():
         20260921
     )
 
-    step = 0
+    step = int(
+        resume[
+            "step"
+        ]
+    )
+
+    completed_epochs = int(
+        resume[
+            "completed_epochs"
+        ]
+    )
+
+    session_first_epoch = (
+        completed_epochs
+        + 1
+    )
+
+    session_last_epoch = (
+        completed_epochs
+        + epochs
+    )
+
     last_loss = None
     started = time.time()
 
@@ -829,8 +923,8 @@ def main():
     )
 
     for epoch in range(
-        1,
-        epochs + 1,
+        session_first_epoch,
+        session_last_epoch + 1,
     ):
         order = rng.permutation(
             len(
@@ -864,7 +958,7 @@ def main():
                     optimizer=optimizer,
                     config=config,
                     epoch=epoch,
-                    epochs=epochs,
+                    epochs=session_last_epoch,
                     step=step,
                     train_loss=last_loss,
                     examples=len(
@@ -1024,7 +1118,10 @@ def main():
                     )
 
                     done_blocks = (
-                        (epoch - 1)
+                        (
+                            epoch
+                            - session_first_epoch
+                        )
                         * len(
                             x_all
                         )
@@ -1038,7 +1135,11 @@ def main():
                     )
 
                     total_blocks = (
-                        epochs
+                        (
+                            session_last_epoch
+                            - session_first_epoch
+                            + 1
+                        )
                         * len(
                             x_all
                         )
@@ -1077,7 +1178,7 @@ def main():
                     print(
                         (
                             f"[TEACHER step={step:05d}] "
-                            f"epoch={epoch}/{epochs} | "
+                            f"epoch={epoch}/{session_last_epoch} | "
                             f"loss={last_loss:.4f} | "
                             f"progress={progress * 100:.2f}% | "
                             f"peak={peak:.2f} GB | "
@@ -1105,7 +1206,7 @@ def main():
             optimizer=optimizer,
             config=config,
             epoch=epoch,
-            epochs=epochs,
+            epochs=session_last_epoch,
             step=step,
             train_loss=epoch_loss,
             examples=len(
@@ -1115,12 +1216,13 @@ def main():
                 x_all
             ),
             profile=args.mode,
+            epoch_complete=True,
         )
 
         print(
             (
                 f"[TEACHER EPOCH COMPLETE] "
-                f"{epoch}/{epochs} | "
+                f"{epoch}/{session_last_epoch} | "
                 f"loss={epoch_loss:.4f}"
             ),
             flush=True,
