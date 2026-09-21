@@ -199,7 +199,7 @@ def write_status(
     )
 
     payload = {
-        "version": "0.1.0",
+        "version": "0.1.2",
         "step": int(step),
         "tokens_seen": int(tokens_seen),
         "train_loss": (
@@ -247,8 +247,23 @@ def save_checkpoint(
         exist_ok=True
     )
 
+    if int(step) <= 0 or int(tokens_seen) <= 0:
+        write_status(
+            step=0,
+            tokens_seen=0,
+            train_loss=None,
+            val_loss=None,
+            profile=profile,
+        )
+
+        print(
+            "[V01 CHECKPOINT] Aucun token entraîné : checkpoint lourd non sauvegardé.",
+            flush=True
+        )
+        return
+
     payload = {
-        "amber_version": "0.1.0",
+        "amber_version": "0.1.2",
         "config": config.to_dict(),
         "step": int(step),
         "tokens_seen": int(tokens_seen),
@@ -303,6 +318,11 @@ def load_checkpoint(
     device,
 ):
     if not CHECKPOINT.exists():
+        print(
+            "[V01] Aucun checkpoint existant : démarrage depuis zéro.",
+            flush=True
+        )
+
         return {
             "step": 0,
             "tokens_seen": 0,
@@ -310,24 +330,127 @@ def load_checkpoint(
             "val_loss": None,
         }
 
+    # Le sidecar JSON est minuscule : on le lit avant le gros fichier .pt.
+    status = {}
+
+    if STATUS_FILE.exists():
+        try:
+            status = json.loads(
+                STATUS_FILE.read_text(
+                    encoding="utf-8"
+                )
+            )
+        except Exception:
+            status = {}
+
+    status_step = int(
+        status.get(
+            "step",
+            -1
+        )
+    )
+
+    status_tokens = int(
+        status.get(
+            "tokens_seen",
+            -1
+        )
+    )
+
+    if status_step == 0 and status_tokens == 0:
+        size_mb = (
+            CHECKPOINT.stat().st_size
+            / 1024**2
+        )
+
+        print(
+            (
+                "[V01] Checkpoint vide détecté "
+                f"({size_mb:.1f} MB, 0 token). "
+                "Il est inutile et sera ignoré."
+            ),
+            flush=True
+        )
+
+        try:
+            CHECKPOINT.unlink()
+            print(
+                "[V01] Ancien checkpoint vide supprimé.",
+                flush=True
+            )
+        except Exception as exc:
+            print(
+                f"[V01] Impossible de supprimer le checkpoint vide : {exc}",
+                flush=True
+            )
+
+        return {
+            "step": 0,
+            "tokens_seen": 0,
+            "train_loss": None,
+            "val_loss": None,
+        }
+
+    size_mb = (
+        CHECKPOINT.stat().st_size
+        / 1024**2
+    )
+
     print(
-        "[V01] Chargement checkpoint...",
+        (
+            "[V01] Chargement checkpoint "
+            f"({size_mb:.1f} MB) vers la RAM..."
+        ),
         flush=True
     )
 
-    payload = torch.load(
-        CHECKPOINT,
-        map_location=device,
-        weights_only=False
+    load_started = time.time()
+
+    try:
+        payload = torch.load(
+            CHECKPOINT,
+            map_location="cpu",
+            weights_only=False,
+            mmap=True,
+        )
+    except TypeError:
+        payload = torch.load(
+            CHECKPOINT,
+            map_location="cpu",
+            weights_only=False,
+        )
+
+    print(
+        (
+            "[V01] Checkpoint lu en "
+            f"{time.time() - load_started:.1f}s. "
+            "Chargement des poids sur le GPU..."
+        ),
+        flush=True
     )
 
     model.load_state_dict(
         payload["model_state"]
     )
 
+    print(
+        "[V01] Poids modèle restaurés.",
+        flush=True
+    )
+
     if "optimizer_state" in payload:
+        print(
+            "[V01] Restauration optimizer...",
+            flush=True
+        )
+
         optimizer.load_state_dict(
             payload["optimizer_state"]
+        )
+
+        print(
+            "[V01] Optimizer restauré.",
+            flush=True
         )
 
     if "scaler_state" in payload:
@@ -338,19 +461,32 @@ def load_checkpoint(
         except Exception:
             pass
 
+    restored_step = int(
+        payload.get(
+            "step",
+            0
+        )
+    )
+
+    restored_tokens = int(
+        payload.get(
+            "tokens_seen",
+            0
+        )
+    )
+
+    print(
+        (
+            "[V01] Reprise prête : "
+            f"step {restored_step}, "
+            f"{restored_tokens:,} tokens."
+        ),
+        flush=True
+    )
+
     return {
-        "step": int(
-            payload.get(
-                "step",
-                0
-            )
-        ),
-        "tokens_seen": int(
-            payload.get(
-                "tokens_seen",
-                0
-            )
-        ),
+        "step": restored_step,
+        "tokens_seen": restored_tokens,
         "train_loss": payload.get(
             "train_loss"
         ),
@@ -506,14 +642,39 @@ def main():
         device
     )
 
+    print(
+        f"[V01] GPU sélectionné : {torch.cuda.get_device_name(device)}",
+        flush=True
+    )
+
     config = AmberV01Config(
         vocab_size=vocab_size
     )
+
+    print(
+        "[V01] Initialisation du modèle 100 M paramètres...",
+        flush=True
+    )
+
+    model_started = time.time()
 
     model = AmberV01Model(
         config
     ).to(
         device
+    )
+
+    print(
+        (
+            "[V01] Modèle initialisé en "
+            f"{time.time() - model_started:.1f}s."
+        ),
+        flush=True
+    )
+
+    print(
+        "[V01] Initialisation optimizer...",
+        flush=True
     )
 
     optimizer = torch.optim.AdamW(
@@ -529,8 +690,18 @@ def main():
         weight_decay=0.1,
     )
 
+    print(
+        "[V01] Optimizer prêt.",
+        flush=True
+    )
+
     amp_dtype, scaler = (
         amp_setup()
+    )
+
+    print(
+        f"[V01] Mixed precision : {amp_dtype}.",
+        flush=True
     )
 
     state = load_checkpoint(
@@ -624,7 +795,7 @@ def main():
     )
 
     print(
-        "AMBER 0.1.0 PRETRAINER",
+        "AMBER 0.1.2 PRETRAINER",
         flush=True
     )
 
@@ -861,6 +1032,24 @@ def main():
             accumulation
         ):
             if (
+                step == state["step"]
+                and actual_micro_steps in {
+                    0,
+                    3,
+                    6,
+                    9
+                }
+            ):
+                print(
+                    (
+                        "[V01] Premier step en cours : "
+                        f"micro-batch {actual_micro_steps + 1}/"
+                        f"{accumulation}"
+                    ),
+                    flush=True
+                )
+
+            if (
                 tokens_seen
                 + (
                     sequence_length
@@ -950,13 +1139,16 @@ def main():
         )
 
         if (
-            step == 1
-            or step % 20 == 0
+            step <= 5
+            or step % 10 == 0
             or tokens_seen >= target_tokens
         ):
             if (
-                step % 200 == 0
-                or last_val_loss is None
+                step % 100 == 0
+                or (
+                    last_val_loss is None
+                    and step >= 5
+                )
             ):
                 try:
                     last_val_loss = validation_loss(
