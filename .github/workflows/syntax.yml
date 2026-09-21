@@ -13,7 +13,10 @@ jobs:
         with:
           python-version: "3.12"
       - name: Compile Python sources
-        run: python -m compileall -q amber training tokenizer inference evaluation tests amber_app.py
+        run: python -m compileall -q amber training tokenizer inference evaluation teacher tests amber_app.py
 
       - name: Test clean-data pipeline
         run: python -m unittest tests.test_v02_data
+
+      - name: Test Amber Teacher curriculum
+        run: python -m unittest tests.test_teacher
