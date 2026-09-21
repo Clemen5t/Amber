@@ -21,6 +21,7 @@ from tokenizer.amber_bpe import AmberBPETokenizer
 
 ROOT = Path(__file__).resolve().parents[1]
 CHECKPOINT = ROOT / "checkpoints" / "amber_teacher_latest.pt"
+REPORT_FILE = ROOT / "data" / "teacher" / "exam_report.json"
 
 
 def find_amber_gpu():
@@ -509,6 +510,20 @@ def main():
         "remedial_examples": remedial_count,
         "results": results,
     }
+
+    REPORT_FILE.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    REPORT_FILE.write_text(
+        json.dumps(
+            summary,
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
 
     print(
         (
