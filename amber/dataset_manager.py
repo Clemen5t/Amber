@@ -7,7 +7,9 @@ import io
 import json
 import re
 import shutil
+import threading
 import unicodedata
+import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -36,20 +38,81 @@ SUPPORTED_TEXT_SUFFIXES = {
     ".bz2",
 }
 
+WIKIMEDIA_LICENSE = "Wikimedia - CC BY-SA / GFDL selon le projet et le contenu"
+WIKIMEDIA_LICENSE_URL = (
+    "https://foundation.wikimedia.org/wiki/Policy:Terms_of_Use/fr"
+)
+
 SOURCE_CATALOG = {
     "wikipedia_fr": {
-        "name": "Wikipedia FR - dump articles (très gros)",
+        "name": "Wikipedia FR - articles",
         "url": (
             "https://dumps.wikimedia.org/frwiki/latest/"
             "frwiki-latest-pages-articles-multistream.xml.bz2"
         ),
         "filename": "frwiki-latest-pages-articles-multistream.xml.bz2",
         "language": "fr",
-        "license": "CC BY-SA / GFDL selon le contenu Wikimedia",
-        "license_url": "https://foundation.wikimedia.org/wiki/Policy:Terms_of_Use/fr",
-        "note": "Dump officiel très volumineux. Prévoir plusieurs Go de stockage.",
+        "license": WIKIMEDIA_LICENSE,
+        "license_url": WIKIMEDIA_LICENSE_URL,
+        "note": "Encyclopédie généraliste. Dump officiel très volumineux.",
+    },
+    "wiktionary_fr": {
+        "name": "Wiktionnaire FR - articles",
+        "url": (
+            "https://dumps.wikimedia.org/frwiktionary/latest/"
+            "frwiktionary-latest-pages-articles-multistream.xml.bz2"
+        ),
+        "filename": (
+            "frwiktionary-latest-pages-articles-multistream.xml.bz2"
+        ),
+        "language": "fr",
+        "license": WIKIMEDIA_LICENSE,
+        "license_url": WIKIMEDIA_LICENSE_URL,
+        "note": "Vocabulaire, définitions et exemples linguistiques.",
+    },
+    "wikisource_fr": {
+        "name": "Wikisource FR - textes",
+        "url": (
+            "https://dumps.wikimedia.org/frwikisource/latest/"
+            "frwikisource-latest-pages-articles-multistream.xml.bz2"
+        ),
+        "filename": (
+            "frwikisource-latest-pages-articles-multistream.xml.bz2"
+        ),
+        "language": "fr",
+        "license": WIKIMEDIA_LICENSE,
+        "license_url": WIKIMEDIA_LICENSE_URL,
+        "note": "Textes et ouvrages. Vérifier la licence de chaque contenu si nécessaire.",
+    },
+    "wikibooks_fr": {
+        "name": "Wikilivres FR - articles",
+        "url": (
+            "https://dumps.wikimedia.org/frwikibooks/latest/"
+            "frwikibooks-latest-pages-articles-multistream.xml.bz2"
+        ),
+        "filename": "frwikibooks-latest-pages-articles-multistream.xml.bz2",
+        "language": "fr",
+        "license": WIKIMEDIA_LICENSE,
+        "license_url": WIKIMEDIA_LICENSE_URL,
+        "note": "Contenu pédagogique et livres collaboratifs.",
+    },
+    "wikiquote_fr": {
+        "name": "Wikiquote FR - articles",
+        "url": (
+            "https://dumps.wikimedia.org/frwikiquote/latest/"
+            "frwikiquote-latest-pages-articles-multistream.xml.bz2"
+        ),
+        "filename": "frwikiquote-latest-pages-articles-multistream.xml.bz2",
+        "language": "fr",
+        "license": WIKIMEDIA_LICENSE,
+        "license_url": WIKIMEDIA_LICENSE_URL,
+        "note": "Citations et contexte. Corpus plus petit que Wikipedia.",
     },
 }
+
+
+class DownloadCancelled(RuntimeError):
+    pass
 
 
 def ensure_layout() -> None:
@@ -62,7 +125,7 @@ def ensure_layout() -> None:
         path.mkdir(parents=True, exist_ok=True)
 
 
-def format_bytes(size: int) -> str:
+def format_bytes(size: int | float) -> str:
     value = float(size)
 
     for unit in ("B", "KB", "MB", "GB", "TB"):
@@ -73,14 +136,31 @@ def format_bytes(size: int) -> str:
     return f"{value:.1f} TB"
 
 
+def format_tokens(tokens: int | float) -> str:
+    value = float(tokens)
+
+    if value >= 1_000_000_000:
+        return f"{value / 1_000_000_000:.2f} B"
+
+    if value >= 1_000_000:
+        return f"{value / 1_000_000:.1f} M"
+
+    if value >= 1_000:
+        return f"{value / 1_000:.1f} K"
+
+    return f"{int(value):,}"
+
+
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
 
     with path.open("rb") as handle:
         while True:
             chunk = handle.read(1024 * 1024)
+
             if not chunk:
                 break
+
             digest.update(chunk)
 
     return digest.hexdigest()
@@ -111,9 +191,6 @@ def file_stats(
     stat = path.stat()
     size = stat.st_size
 
-    # Le Dataset Manager doit rester réactif même avec des corpus de plusieurs Go.
-    # Les statistiques détaillées sont donc calculées uniquement sur les fichiers
-    # raisonnablement petits. La taille reste toujours disponible.
     if size > detailed_limit_bytes:
         return {
             "exists": True,
@@ -161,10 +238,12 @@ def _metadata_path(path: Path) -> Path:
 
 def _write_source_metadata(path: Path, metadata: dict) -> None:
     metadata = dict(metadata)
+
     metadata.setdefault(
         "added_at",
         datetime.now().isoformat(timespec="seconds")
     )
+
     metadata["local_path"] = str(path)
 
     _metadata_path(path).write_text(
@@ -186,6 +265,9 @@ def list_raw_sources() -> list[dict]:
             continue
 
         if path.name.endswith(".source.json"):
+            continue
+
+        if path.name.endswith(".part"):
             continue
 
         metadata = {}
@@ -210,23 +292,15 @@ def list_raw_sources() -> list[dict]:
                 "size_human": format_bytes(
                     path.stat().st_size
                 ),
-                "sha256": (
-                    metadata.get("sha256")
-                    or None
-                ),
+                "sha256": metadata.get("sha256"),
                 "source_type": metadata.get(
                     "source_type",
                     "unknown"
                 ),
-                "source_url": metadata.get(
-                    "source_url"
-                ),
-                "license": metadata.get(
-                    "license"
-                ),
-                "language": metadata.get(
-                    "language"
-                ),
+                "source_url": metadata.get("source_url"),
+                "license": metadata.get("license"),
+                "license_url": metadata.get("license_url"),
+                "language": metadata.get("language"),
             }
         )
 
@@ -248,7 +322,12 @@ def import_local_file(
             f"Fichier introuvable : {source}"
         )
 
-    if source.suffix.lower() not in SUPPORTED_TEXT_SUFFIXES:
+    lower_name = source.name.lower()
+
+    if not any(
+        lower_name.endswith(suffix)
+        for suffix in SUPPORTED_TEXT_SUFFIXES
+    ):
         raise ValueError(
             "Format non pris en charge. "
             "Utilise TXT, MD, JSONL, XML, GZ ou BZ2."
@@ -260,6 +339,7 @@ def import_local_file(
         stamp = datetime.now().strftime(
             "%Y%m%d_%H%M%S"
         )
+
         destination = RAW_DIR / (
             f"{source.stem}_{stamp}{source.suffix}"
         )
@@ -297,6 +377,198 @@ def import_local_file(
     }
 
 
+def probe_remote_size(
+    url: str,
+    *,
+    timeout: int = 25,
+) -> int | None:
+    parsed = urllib.parse.urlparse(url)
+
+    if parsed.scheme not in {"http", "https"}:
+        return None
+
+    headers = {
+        "User-Agent": (
+            "AmberDatasetManager/0.0.7 "
+            "(local research project)"
+        )
+    }
+
+    request = urllib.request.Request(
+        url,
+        headers=headers,
+        method="HEAD"
+    )
+
+    try:
+        with urllib.request.urlopen(
+            request,
+            timeout=timeout
+        ) as response:
+            length = response.headers.get(
+                "Content-Length"
+            )
+
+            if length:
+                return int(length)
+
+    except Exception:
+        pass
+
+    request = urllib.request.Request(
+        url,
+        headers={
+            **headers,
+            "Range": "bytes=0-0",
+        }
+    )
+
+    try:
+        with urllib.request.urlopen(
+            request,
+            timeout=timeout
+        ) as response:
+            content_range = response.headers.get(
+                "Content-Range"
+            )
+
+            if content_range and "/" in content_range:
+                total = content_range.rsplit(
+                    "/",
+                    1
+                )[-1]
+
+                if total.isdigit():
+                    return int(total)
+
+            length = response.headers.get(
+                "Content-Length"
+            )
+
+            if length:
+                return int(length)
+
+    except Exception:
+        return None
+
+    return None
+
+
+def estimate_source_plan(
+    selected_keys: list[str],
+    *,
+    target_tokens: int = 100_000_000,
+) -> dict:
+    ensure_layout()
+
+    items = []
+    remote_total = 0
+    unknown = 0
+
+    for key in selected_keys:
+        source = SOURCE_CATALOG.get(key)
+
+        if not source:
+            continue
+
+        size = probe_remote_size(
+            source["url"]
+        )
+
+        if size is None:
+            unknown += 1
+        else:
+            remote_total += size
+
+        destination = RAW_DIR / source["filename"]
+        part = destination.with_suffix(
+            destination.suffix + ".part"
+        )
+
+        existing = 0
+
+        if destination.exists():
+            existing = destination.stat().st_size
+        elif part.exists():
+            existing = part.stat().st_size
+
+        remaining = (
+            max(0, size - existing)
+            if size is not None
+            else None
+        )
+
+        items.append(
+            {
+                "key": key,
+                "name": source["name"],
+                "size_bytes": size,
+                "size_human": (
+                    format_bytes(size)
+                    if size is not None
+                    else "inconnue"
+                ),
+                "existing_bytes": existing,
+                "remaining_bytes": remaining,
+                "remaining_human": (
+                    format_bytes(remaining)
+                    if remaining is not None
+                    else "inconnue"
+                ),
+                "license": source.get("license"),
+                "license_url": source.get("license_url"),
+                "note": source.get("note"),
+            }
+        )
+
+    target_tokens = max(
+        1,
+        int(target_tokens)
+    )
+
+    # Estimation volontairement prudente avant le vrai tokenization.
+    # En français, un tokenizer BPE 32k produit souvent quelques caractères
+    # par token. On réserve ~4 octets de texte/token + marge de travail.
+    estimated_text_bytes = target_tokens * 4
+    prepared_working_bytes = estimated_text_bytes * 2
+    safety_bytes = 2 * 1024**3
+
+    known_remaining = sum(
+        item["remaining_bytes"] or 0
+        for item in items
+        if item["remaining_bytes"] is not None
+    )
+
+    recommended_free = (
+        known_remaining
+        + prepared_working_bytes
+        + safety_bytes
+    )
+
+    usage = shutil.disk_usage(
+        DATA_DIR
+    )
+
+    return {
+        "items": items,
+        "selected_count": len(items),
+        "remote_total_bytes": remote_total,
+        "remote_total_human": format_bytes(remote_total),
+        "known_remaining_bytes": known_remaining,
+        "known_remaining_human": format_bytes(known_remaining),
+        "unknown_sizes": unknown,
+        "target_tokens": target_tokens,
+        "target_tokens_human": format_tokens(target_tokens),
+        "estimated_text_bytes": estimated_text_bytes,
+        "estimated_text_human": format_bytes(estimated_text_bytes),
+        "recommended_free_bytes": recommended_free,
+        "recommended_free_human": format_bytes(recommended_free),
+        "disk_free_bytes": usage.free,
+        "disk_free_human": format_bytes(usage.free),
+        "disk_ok": usage.free >= recommended_free,
+    }
+
+
 def download_source(
     url: str,
     *,
@@ -305,6 +577,8 @@ def download_source(
     license_name: str | None = None,
     license_url: str | None = None,
     progress_callback=None,
+    cancel_event: threading.Event | None = None,
+    resume: bool = True,
 ) -> dict:
     ensure_layout()
 
@@ -341,36 +615,105 @@ def download_source(
         destination.suffix + ".part"
     )
 
-    request = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": (
-                "AmberDatasetManager/0.0.6 "
-                "(local research project)"
-            )
+    if destination.exists():
+        return {
+            "path": str(destination),
+            "name": destination.name,
+            "size_bytes": destination.stat().st_size,
+            "size_human": format_bytes(
+                destination.stat().st_size
+            ),
+            "sha256": None,
+            "resumed": False,
+            "already_present": True,
         }
+
+    resume_from = (
+        temp.stat().st_size
+        if resume and temp.exists()
+        else 0
     )
 
-    downloaded = 0
+    headers = {
+        "User-Agent": (
+            "AmberDatasetManager/0.0.7 "
+            "(local research project)"
+        )
+    }
+
+    if resume_from > 0:
+        headers["Range"] = (
+            f"bytes={resume_from}-"
+        )
+
+    request = urllib.request.Request(
+        url,
+        headers=headers
+    )
+
+    downloaded = resume_from
     total = None
+    resumed = resume_from > 0
 
     try:
         with urllib.request.urlopen(
             request,
             timeout=60
         ) as response:
-            length = response.headers.get(
-                "Content-Length"
+            status = getattr(
+                response,
+                "status",
+                None
             )
 
-            if length:
-                try:
-                    total = int(length)
-                except ValueError:
-                    total = None
+            content_range = response.headers.get(
+                "Content-Range"
+            )
 
-            with temp.open("wb") as handle:
+            if resumed and status != 206:
+                resume_from = 0
+                downloaded = 0
+                resumed = False
+
+            if content_range and "/" in content_range:
+                tail = content_range.rsplit(
+                    "/",
+                    1
+                )[-1]
+
+                if tail.isdigit():
+                    total = int(tail)
+
+            if total is None:
+                length = response.headers.get(
+                    "Content-Length"
+                )
+
+                if length:
+                    length = int(length)
+                    total = (
+                        length + resume_from
+                        if resumed
+                        else length
+                    )
+
+            mode = (
+                "ab"
+                if resumed
+                else "wb"
+            )
+
+            with temp.open(mode) as handle:
                 while True:
+                    if (
+                        cancel_event is not None
+                        and cancel_event.is_set()
+                    ):
+                        raise DownloadCancelled(
+                            "Téléchargement annulé. "
+                            "Le fichier .part est conservé pour reprendre plus tard."
+                        )
+
                     chunk = response.read(
                         1024 * 1024
                     )
@@ -396,12 +739,11 @@ def download_source(
             destination
         )
 
+    except DownloadCancelled:
+        raise
+
     except Exception:
-        try:
-            if temp.exists():
-                temp.unlink()
-        except Exception:
-            pass
+        # On conserve volontairement le .part pour permettre une reprise.
         raise
 
     sha256 = _sha256_file(
@@ -430,6 +772,8 @@ def download_source(
             destination.stat().st_size
         ),
         "sha256": sha256,
+        "resumed": resumed,
+        "already_present": False,
     }
 
 
@@ -437,6 +781,7 @@ def download_catalog_source(
     key: str,
     *,
     progress_callback=None,
+    cancel_event: threading.Event | None = None,
 ) -> dict:
     source = SOURCE_CATALOG.get(
         key
@@ -450,17 +795,70 @@ def download_catalog_source(
     return download_source(
         source["url"],
         filename=source["filename"],
-        language=source.get(
-            "language"
-        ),
-        license_name=source.get(
-            "license"
-        ),
-        license_url=source.get(
-            "license_url"
-        ),
+        language=source.get("language"),
+        license_name=source.get("license"),
+        license_url=source.get("license_url"),
         progress_callback=progress_callback,
+        cancel_event=cancel_event,
+        resume=True,
     )
+
+
+def download_catalog_sources(
+    keys: list[str],
+    *,
+    progress_callback=None,
+    cancel_event: threading.Event | None = None,
+) -> list[dict]:
+    results = []
+
+    for index, key in enumerate(keys, start=1):
+        if (
+            cancel_event is not None
+            and cancel_event.is_set()
+        ):
+            raise DownloadCancelled(
+                "Téléchargement annulé."
+            )
+
+        source = SOURCE_CATALOG.get(
+            key
+        )
+
+        if not source:
+            continue
+
+        def progress(
+            downloaded,
+            total,
+            *,
+            current_key=key,
+            current_name=source["name"],
+            current_index=index,
+        ):
+            if progress_callback:
+                progress_callback(
+                    {
+                        "key": current_key,
+                        "name": current_name,
+                        "index": current_index,
+                        "count": len(keys),
+                        "downloaded": downloaded,
+                        "total": total,
+                    }
+                )
+
+        result = download_catalog_source(
+            key,
+            progress_callback=progress,
+            cancel_event=cancel_event,
+        )
+
+        results.append(
+            result
+        )
+
+    return results
 
 
 def _normalize_text(
@@ -696,16 +1094,10 @@ def _iter_jsonl(
             except Exception:
                 continue
 
-            if isinstance(
-                item,
-                str
-            ):
+            if isinstance(item, str):
                 text = item
 
-            elif isinstance(
-                item,
-                dict
-            ):
+            elif isinstance(item, dict):
                 text = None
 
                 for key in (
@@ -719,10 +1111,7 @@ def _iter_jsonl(
                         key
                     )
 
-                    if isinstance(
-                        value,
-                        str
-                    ):
+                    if isinstance(value, str):
                         text = value
                         break
 
@@ -819,7 +1208,9 @@ def prepare_dataset(
     min_chars: int = 80,
     max_chars: int = 20000,
     include_seed: bool = True,
+    target_tokens: int | None = None,
     progress_callback=None,
+    cancel_event: threading.Event | None = None,
 ) -> dict:
     ensure_layout()
 
@@ -853,6 +1244,13 @@ def prepare_dataset(
     validation_docs = 0
     skipped = 0
     total_chars = 0
+    stopped_on_target = False
+
+    target_chars = (
+        int(target_tokens) * 4
+        if target_tokens
+        else None
+    )
 
     with PREPARED_TRAIN_FILE.open(
         "w",
@@ -875,18 +1273,25 @@ def prepare_dataset(
                         "stage": "source",
                         "source": source.name,
                         "source_index": source_index,
-                        "source_count": len(
-                            sources
-                        ),
+                        "source_count": len(sources),
                         "train_docs": train_docs,
                         "validation_docs": validation_docs,
                         "skipped": skipped,
+                        "approx_tokens": total_chars // 4,
                     }
                 )
 
             for document in iter_documents(
                 source
             ):
+                if (
+                    cancel_event is not None
+                    and cancel_event.is_set()
+                ):
+                    raise DownloadCancelled(
+                        "Préparation annulée."
+                    )
+
                 document = _normalize_text(
                     document
                 )
@@ -943,6 +1348,13 @@ def prepare_dataset(
                 )
 
                 if (
+                    target_chars is not None
+                    and total_chars >= target_chars
+                ):
+                    stopped_on_target = True
+                    break
+
+                if (
                     progress_callback
                     and (
                         train_docs
@@ -956,17 +1368,31 @@ def prepare_dataset(
                             "train_docs": train_docs,
                             "validation_docs": validation_docs,
                             "skipped": skipped,
+                            "approx_tokens": total_chars // 4,
                         }
                     )
+
+            if stopped_on_target:
+                break
+
+    approx_tokens = total_chars // 4
 
     result = {
         "train_docs": train_docs,
         "validation_docs": validation_docs,
         "skipped": skipped,
-        "unique_docs": len(
-            seen
-        ),
+        "unique_docs": len(seen),
         "characters": total_chars,
+        "approx_tokens": approx_tokens,
+        "approx_tokens_human": format_tokens(
+            approx_tokens
+        ),
+        "target_tokens": target_tokens,
+        "target_reached": (
+            stopped_on_target
+            if target_tokens
+            else None
+        ),
         "train_file": str(
             PREPARED_TRAIN_FILE
         ),
@@ -996,6 +1422,7 @@ def write_manifest(
     path: Path = TRAIN_FILE,
     *,
     prepared: dict | None = None,
+    planner: dict | None = None,
 ) -> dict:
     ensure_layout()
 
@@ -1016,13 +1443,14 @@ def write_manifest(
         }
 
     manifest = {
-        "amber_dataset_manifest_version": 2,
+        "amber_dataset_manifest_version": 3,
         "created_at": datetime.now().isoformat(
             timespec="seconds"
         ),
         "seed_corpus": seed_stats,
         "raw_sources": raw_sources,
         "prepared": prepared,
+        "planner": planner,
         "tokenizer_target": {
             "name": "AmberBPETokenizer",
             "vocab_size": 32000,
@@ -1039,8 +1467,8 @@ def write_manifest(
             else "collecting"
         ),
         "notes": (
-            "Amber 0.0.6 conserve Amber Seed séparément. "
-            "Les données préparées servent au futur Amber 0.1."
+            "Amber 0.0.7 conserve Amber Seed séparément. "
+            "Les objectifs en tokens sont des estimations avant tokenization exacte."
         ),
     }
 
