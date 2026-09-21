@@ -103,7 +103,7 @@ class AmberApp(tk.Tk):
         super().__init__()
 
         self.title(
-            "Amber 0.1.1"
+            "Amber 0.1.2"
         )
 
         self.geometry(
@@ -335,7 +335,7 @@ class AmberApp(tk.Tk):
 
         ttk.Label(
             root,
-            text="AI Control Center · Amber Model 0.1.1",
+            text="AI Control Center · Amber Model 0.1.2",
             style="Subtitle.TLabel"
         ).pack(
             anchor="w",
@@ -529,7 +529,7 @@ class AmberApp(tk.Tk):
         )
 
         self.log(
-            "Amber Control Center 0.0.7 ready."
+            "Amber Control Center 0.1.2 ready."
         )
 
     def _timestamp(self):
@@ -2519,7 +2519,7 @@ class AmberApp(tk.Tk):
 
         ttk.Label(
             self.v01_tab,
-            text="Amber 0.1.1",
+            text="Amber 0.1.2",
             style="Title.TLabel"
         ).pack(
             anchor="w",
