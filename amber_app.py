@@ -103,7 +103,7 @@ class AmberApp(tk.Tk):
         super().__init__()
 
         self.title(
-            "Amber 0.1.2"
+            "Amber 0.1.3"
         )
 
         self.geometry(
@@ -335,7 +335,7 @@ class AmberApp(tk.Tk):
 
         ttk.Label(
             root,
-            text="AI Control Center · Amber Model 0.1.2",
+            text="AI Control Center · Amber Model 0.1.3",
             style="Subtitle.TLabel"
         ).pack(
             anchor="w",
@@ -529,7 +529,7 @@ class AmberApp(tk.Tk):
         )
 
         self.log(
-            "Amber Control Center 0.1.2 ready."
+            "Amber Control Center 0.1.3 ready."
         )
 
     def _timestamp(self):
@@ -2519,7 +2519,7 @@ class AmberApp(tk.Tk):
 
         ttk.Label(
             self.v01_tab,
-            text="Amber 0.1.2",
+            text="Amber 0.1.3",
             style="Title.TLabel"
         ).pack(
             anchor="w",
@@ -2677,6 +2677,15 @@ class AmberApp(tk.Tk):
             mode_row,
             text="Sauvegarder et arrêter",
             command=self.stop_v01_training
+        ).pack(
+            side="left",
+            padx=7
+        )
+
+        ttk.Button(
+            mode_row,
+            text="Forcer arrêt",
+            command=self.force_stop_v01_training
         ).pack(
             side="left",
             padx=7
@@ -3030,16 +3039,34 @@ class AmberApp(tk.Tk):
             text="Pré-entraînement en cours..."
         )
 
+        command = [
+            sys.executable,
+            "-m",
+            "training.train_v01",
+            "--mode",
+            self.v01_mode.get().lower(),
+            "--target-tokens",
+            str(target)
+        ]
+
+        status = self._read_v01_status_file()
+
+        if int(
+            status.get(
+                "tokens_seen",
+                0
+            )
+        ) <= 0:
+            command.append(
+                "--fresh"
+            )
+
+            self._v01_log(
+                "[V01] Aucun apprentissage validé : démarrage propre demandé."
+            )
+
         self._run_command(
-            [
-                sys.executable,
-                "-m",
-                "training.train_v01",
-                "--mode",
-                self.v01_mode.get().lower(),
-                "--target-tokens",
-                str(target)
-            ]
+            command
         )
 
     def toggle_v01_pause(self):
@@ -3103,6 +3130,46 @@ class AmberApp(tk.Tk):
 
             self.v01_status_label.config(
                 text="Sauvegarde et arrêt..."
+            )
+
+        except Exception as exc:
+            messagebox.showerror(
+                "Amber 0.1",
+                str(exc)
+            )
+
+    def force_stop_v01_training(self):
+
+        process = self.process
+
+        if (
+            process is None
+            or process.poll() is not None
+        ):
+            self.v01_status_label.config(
+                text="Aucun processus à forcer."
+            )
+            return
+
+        if not messagebox.askyesno(
+            "Amber 0.1",
+            (
+                "Forcer l'arrêt du processus ?\n\n"
+                "À utiliser uniquement si Amber est bloqué avant "
+                "un step ou pendant le chargement d'un checkpoint."
+            )
+        ):
+            return
+
+        try:
+            process.kill()
+
+            self.v01_status_label.config(
+                text="Processus forcé à s'arrêter."
+            )
+
+            self._v01_log(
+                "[V01] Processus arrêté de force."
             )
 
         except Exception as exc:
