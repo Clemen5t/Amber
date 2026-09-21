@@ -74,6 +74,7 @@ PROFILES = {
 def load_autotune_profile(
     mode,
     gpu_name,
+    vram_target_gb=None,
 ):
     if mode != "full":
         return None
@@ -93,9 +94,52 @@ def load_autotune_profile(
     if data.get("gpu") != gpu_name:
         return None
 
-    best = data.get(
-        "best"
-    )
+    results = [
+        item
+        for item in data.get(
+            "results",
+            []
+        )
+        if item.get(
+            "safe",
+            False
+        )
+    ]
+
+    if vram_target_gb is None:
+        best = data.get(
+            "best"
+        )
+    else:
+        target_bytes = float(
+            vram_target_gb
+        ) * 1024**3
+
+        if not results:
+            best = data.get(
+                "best"
+            )
+        else:
+            best = min(
+                results,
+                key=lambda item: (
+                    abs(
+                        float(
+                            item.get(
+                                "peak_allocated_bytes",
+                                0
+                            )
+                        )
+                        - target_bytes
+                    ),
+                    -float(
+                        item.get(
+                            "tokens_per_second",
+                            0.0
+                        )
+                    ),
+                )
+            )
 
     if not isinstance(
         best,
@@ -144,13 +188,25 @@ def load_autotune_profile(
                 0.0
             )
         ),
+        "peak_allocated_bytes": int(
+            best.get(
+                "peak_allocated_bytes",
+                0
+            )
+        ),
         "peak_reserved_bytes": int(
             best.get(
                 "peak_reserved_bytes",
                 0
             )
         ),
+        "requested_vram_target_gb": (
+            float(vram_target_gb)
+            if vram_target_gb is not None
+            else None
+        ),
     }
+
 
 def clear_file(path):
     try:
@@ -284,7 +340,7 @@ def write_status(
     )
 
     payload = {
-        "version": "0.1.5",
+        "version": "0.1.6",
         "step": int(step),
         "tokens_seen": int(tokens_seen),
         "train_loss": (
@@ -357,7 +413,7 @@ def save_checkpoint(
         return
 
     payload = {
-        "amber_version": "0.1.5",
+        "amber_version": "0.1.6",
         "config": config.to_dict(),
         "step": int(step),
         "tokens_seen": int(tokens_seen),
@@ -752,6 +808,16 @@ def main():
     )
 
     parser.add_argument(
+        "--full-vram-target",
+        type=float,
+        default=None,
+        help=(
+            "En FULL, choisit dans le profil Auto-Tuner le réglage "
+            "dont le pic VRAM est le plus proche de cette cible en Go."
+        )
+    )
+
+    parser.add_argument(
         "--fresh",
         action="store_true",
         help=(
@@ -815,7 +881,12 @@ def main():
 
     tuned = load_autotune_profile(
         args.mode,
-        gpu_name
+        gpu_name,
+        vram_target_gb=(
+            args.full_vram_target
+            if args.mode == "full"
+            else None
+        )
     )
 
     if tuned:
@@ -838,7 +909,14 @@ def main():
                 f"grad_accum={profile['gradient_accumulation']} | "
                 f"checkpoint="
                 f"{'ON' if profile['gradient_checkpointing'] else 'OFF'} | "
-                f"benchmark={tuned['tokens_per_second']:,.0f} tok/s"
+                f"benchmark={tuned['tokens_per_second']:,.0f} tok/s | "
+                f"picVRAM="
+                f"{tuned['peak_allocated_bytes'] / 1024**3:.2f} GB"
+                + (
+                    f" | cible={tuned['requested_vram_target_gb']:.1f} GB"
+                    if tuned.get("requested_vram_target_gb") is not None
+                    else ""
+                )
             ),
             flush=True
         )
@@ -1123,7 +1201,7 @@ def main():
     )
 
     print(
-        "AMBER 0.1.5 PRETRAINER",
+        "AMBER 0.1.6 PRETRAINER",
         flush=True
     )
 
@@ -1377,6 +1455,10 @@ def main():
             set_to_none=True
         )
 
+        torch.cuda.reset_peak_memory_stats(
+            device
+        )
+
         accumulated_loss = 0.0
         actual_micro_steps = 0
 
@@ -1554,6 +1636,13 @@ def main():
                 / 1024**3
             )
 
+            peak_vram = (
+                torch.cuda.max_memory_allocated(
+                    device
+                )
+                / 1024**3
+            )
+
             reserved_vram = (
                 torch.cuda.memory_reserved(
                     device
@@ -1577,6 +1666,7 @@ def main():
                     f"speed={tok_per_second:,.0f} tok/s | "
                     f"lr={lr:.2e} | "
                     f"vram={vram:.2f} GB | "
+                    f"peak={peak_vram:.2f} GB | "
                     f"reserved={reserved_vram:.2f} GB | "
                     f"eta={format_eta(eta)}"
                 ),
