@@ -108,7 +108,7 @@ class AmberApp(tk.Tk):
         super().__init__()
 
         self.title(
-            "Amber 0.1.6"
+            "Amber 0.1.7"
         )
 
         self.geometry(
@@ -149,6 +149,34 @@ class AmberApp(tk.Tk):
 
         self.v01_full_vram_target = tk.StringVar(
             value="15"
+        )
+
+        self.v01_gen_mode = tk.StringVar(
+            value="Continuation"
+        )
+
+        self.v01_gen_temperature = tk.StringVar(
+            value="0.8"
+        )
+
+        self.v01_gen_top_k = tk.StringVar(
+            value="50"
+        )
+
+        self.v01_gen_top_p = tk.StringVar(
+            value="0.95"
+        )
+
+        self.v01_gen_max_tokens = tk.StringVar(
+            value="120"
+        )
+
+        self.v01_gen_repetition = tk.StringVar(
+            value="1.05"
+        )
+
+        self.v01_eval_batches = tk.StringVar(
+            value="50"
         )
 
         self.current_step = 0
@@ -348,7 +376,7 @@ class AmberApp(tk.Tk):
 
         ttk.Label(
             root,
-            text="AI Control Center · Amber Model 0.1.6",
+            text="AI Control Center · Amber Model 0.1.7",
             style="Subtitle.TLabel"
         ).pack(
             anchor="w",
@@ -388,6 +416,10 @@ class AmberApp(tk.Tk):
             self.notebook
         )
 
+        self.evaluation_tab = ttk.Frame(
+            self.notebook
+        )
+
         self.notebook.add(
             self.dashboard_tab,
             text="Dashboard"
@@ -418,12 +450,18 @@ class AmberApp(tk.Tk):
             text="Amber 0.1"
         )
 
+        self.notebook.add(
+            self.evaluation_tab,
+            text="Évaluation 0.1"
+        )
+
         self._build_dashboard()
         self._build_chat()
         self._build_training()
         self._build_checkpoints()
         self._build_dataset()
         self._build_v01()
+        self._build_v01_evaluation()
 
     # ========================================================
     # DASHBOARD
@@ -542,7 +580,7 @@ class AmberApp(tk.Tk):
         )
 
         self.log(
-            "Amber Control Center 0.1.6 ready."
+            "Amber Control Center 0.1.7 ready."
         )
 
     def _timestamp(self):
@@ -867,6 +905,477 @@ class AmberApp(tk.Tk):
 
         self.send_button.config(
             state="normal"
+        )
+
+    # ========================================================
+    # AMBER 0.1 - EVALUATION & GENERATION
+    # ========================================================
+
+    def _build_v01_evaluation(self):
+
+        ttk.Label(
+            self.evaluation_tab,
+            text="Amber 0.1 · Évaluation & génération",
+            style="Title.TLabel"
+        ).pack(
+            anchor="w",
+            pady=(18, 4)
+        )
+
+        ttk.Label(
+            self.evaluation_tab,
+            text=(
+                "Teste le checkpoint pré-entraîné. "
+                "Amber 0.1 est un modèle de complétion : "
+                "le mode Question-Réponse reste expérimental tant "
+                "qu'un post-entraînement instruction n'a pas été fait."
+            ),
+            style="Subtitle.TLabel"
+        ).pack(
+            anchor="w",
+            pady=(0, 10)
+        )
+
+        cards = ttk.Frame(
+            self.evaluation_tab
+        )
+
+        cards.pack(
+            fill="x",
+            pady=(0, 10)
+        )
+
+        self.eval_checkpoint_value = self._card(
+            cards,
+            "TOKENS ENTRAÎNÉS"
+        )
+
+        self.eval_stored_val_value = self._card(
+            cards,
+            "VAL CHECKPOINT"
+        )
+
+        self.eval_loss_value = self._card(
+            cards,
+            "VAL MESURÉE"
+        )
+
+        self.eval_ppl_value = self._card(
+            cards,
+            "PERPLEXITÉ"
+        )
+
+        top = ttk.Frame(
+            self.evaluation_tab
+        )
+
+        top.pack(
+            fill="both",
+            expand=True
+        )
+
+        left = ttk.Frame(
+            top
+        )
+
+        left.pack(
+            side="left",
+            fill="both",
+            expand=True,
+            padx=(0, 8)
+        )
+
+        right = ttk.Frame(
+            top
+        )
+
+        right.pack(
+            side="left",
+            fill="both",
+            expand=True,
+            padx=(8, 0)
+        )
+
+        ttk.Label(
+            left,
+            text="Prompt"
+        ).pack(
+            anchor="w",
+            pady=(0, 4)
+        )
+
+        self.v01_prompt_input = ScrolledText(
+            left,
+            bg="#191920",
+            fg="#ffffff",
+            insertbackground="white",
+            relief="flat",
+            font=("Segoe UI", 11),
+            height=12
+        )
+
+        self.v01_prompt_input.pack(
+            fill="both",
+            expand=True
+        )
+
+        self.v01_prompt_input.insert(
+            "1.0",
+            "La France est un pays"
+        )
+
+        ttk.Label(
+            right,
+            text="Sortie Amber 0.1"
+        ).pack(
+            anchor="w",
+            pady=(0, 4)
+        )
+
+        self.v01_generation_output = ScrolledText(
+            right,
+            bg="#0b0b0f",
+            fg="#eeeeee",
+            insertbackground="white",
+            relief="flat",
+            font=("Segoe UI", 11),
+            height=12
+        )
+
+        self.v01_generation_output.pack(
+            fill="both",
+            expand=True
+        )
+
+        generation_controls = ttk.Frame(
+            self.evaluation_tab
+        )
+
+        generation_controls.pack(
+            fill="x",
+            pady=(8, 4)
+        )
+
+        ttk.Label(
+            generation_controls,
+            text="Mode :"
+        ).pack(
+            side="left"
+        )
+
+        ttk.Combobox(
+            generation_controls,
+            textvariable=self.v01_gen_mode,
+            values=[
+                "Continuation",
+                "Question-Réponse expérimental"
+            ],
+            state="readonly",
+            width=27
+        ).pack(
+            side="left",
+            padx=(5, 12)
+        )
+
+        for label, variable, width in [
+            ("Temp", self.v01_gen_temperature, 6),
+            ("Top-k", self.v01_gen_top_k, 6),
+            ("Top-p", self.v01_gen_top_p, 6),
+            ("Tokens", self.v01_gen_max_tokens, 7),
+            ("Répét.", self.v01_gen_repetition, 6),
+        ]:
+            ttk.Label(
+                generation_controls,
+                text=label + " :"
+            ).pack(
+                side="left",
+                padx=(4, 2)
+            )
+
+            ttk.Entry(
+                generation_controls,
+                textvariable=variable,
+                width=width
+            ).pack(
+                side="left",
+                padx=(0, 5)
+            )
+
+        ttk.Button(
+            generation_controls,
+            text="Générer",
+            command=self.run_v01_generation
+        ).pack(
+            side="left",
+            padx=(12, 5)
+        )
+
+        ttk.Button(
+            generation_controls,
+            text="Effacer",
+            command=lambda: self.v01_generation_output.delete(
+                "1.0",
+                "end"
+            )
+        ).pack(
+            side="left",
+            padx=5
+        )
+
+        eval_controls = ttk.Frame(
+            self.evaluation_tab
+        )
+
+        eval_controls.pack(
+            fill="x",
+            pady=(4, 8)
+        )
+
+        ttk.Label(
+            eval_controls,
+            text="Batches validation :"
+        ).pack(
+            side="left"
+        )
+
+        ttk.Entry(
+            eval_controls,
+            textvariable=self.v01_eval_batches,
+            width=8
+        ).pack(
+            side="left",
+            padx=6
+        )
+
+        ttk.Button(
+            eval_controls,
+            text="Mesurer loss + perplexité",
+            command=self.run_v01_evaluation
+        ).pack(
+            side="left",
+            padx=6
+        )
+
+        self.v01_eval_status = ttk.Label(
+            eval_controls,
+            text="Prêt"
+        )
+
+        self.v01_eval_status.pack(
+            side="left",
+            padx=14
+        )
+
+        self.refresh_v01_eval_status()
+
+    def refresh_v01_eval_status(self):
+
+        status = self._read_v01_status_file()
+
+        tokens_seen = int(
+            status.get(
+                "tokens_seen",
+                0
+            )
+        )
+
+        stored_val = status.get(
+            "val_loss"
+        )
+
+        self.eval_checkpoint_value.config(
+            text=format_tokens(
+                tokens_seen
+            )
+        )
+
+        self.eval_stored_val_value.config(
+            text=(
+                f"{float(stored_val):.4f}"
+                if stored_val is not None
+                else "-"
+            )
+        )
+
+    def run_v01_generation(self):
+
+        if (
+            self.process is not None
+            and self.process.poll() is None
+        ):
+            messagebox.showwarning(
+                "Amber 0.1",
+                "Une tâche Amber est déjà en cours."
+            )
+            return
+
+        if not V01_CHECKPOINT.exists():
+            messagebox.showwarning(
+                "Amber 0.1",
+                "Checkpoint Amber 0.1 introuvable."
+            )
+            return
+
+        prompt = self.v01_prompt_input.get(
+            "1.0",
+            "end"
+        ).strip()
+
+        if not prompt:
+            return
+
+        try:
+            temperature = float(
+                self.v01_gen_temperature.get()
+            )
+
+            top_k = int(
+                self.v01_gen_top_k.get()
+            )
+
+            top_p = float(
+                self.v01_gen_top_p.get()
+            )
+
+            max_tokens = int(
+                self.v01_gen_max_tokens.get()
+            )
+
+            repetition = float(
+                self.v01_gen_repetition.get()
+            )
+
+        except ValueError:
+            messagebox.showerror(
+                "Amber 0.1",
+                "Paramètres de génération invalides."
+            )
+            return
+
+        mode = (
+            "qa"
+            if self.v01_gen_mode.get().startswith(
+                "Question"
+            )
+            else "continuation"
+        )
+
+        self.v01_generation_output.delete(
+            "1.0",
+            "end"
+        )
+
+        self.v01_generation_output.insert(
+            "end",
+            "Chargement d'Amber 0.1..."
+        )
+
+        self.v01_eval_status.config(
+            text="Génération en cours..."
+        )
+
+        self._run_command(
+            [
+                sys.executable,
+                "-m",
+                "inference.v01",
+                "--prompt",
+                prompt,
+                "--mode",
+                mode,
+                "--max-new-tokens",
+                str(
+                    max(
+                        1,
+                        max_tokens
+                    )
+                ),
+                "--temperature",
+                str(
+                    max(
+                        0.0,
+                        temperature
+                    )
+                ),
+                "--top-k",
+                str(
+                    max(
+                        0,
+                        top_k
+                    )
+                ),
+                "--top-p",
+                str(
+                    min(
+                        max(
+                            top_p,
+                            0.0
+                        ),
+                        1.0
+                    )
+                ),
+                "--repetition-penalty",
+                str(
+                    max(
+                        1.0,
+                        repetition
+                    )
+                ),
+            ]
+        )
+
+    def run_v01_evaluation(self):
+
+        if (
+            self.process is not None
+            and self.process.poll() is None
+        ):
+            messagebox.showwarning(
+                "Amber 0.1",
+                "Une tâche Amber est déjà en cours."
+            )
+            return
+
+        if not V01_CHECKPOINT.exists():
+            messagebox.showwarning(
+                "Amber 0.1",
+                "Checkpoint Amber 0.1 introuvable."
+            )
+            return
+
+        try:
+            batches = int(
+                self.v01_eval_batches.get()
+            )
+
+        except ValueError:
+            messagebox.showerror(
+                "Amber 0.1",
+                "Le nombre de batches doit être un entier."
+            )
+            return
+
+        self.v01_eval_status.config(
+            text="Évaluation validation en cours..."
+        )
+
+        self._run_command(
+            [
+                sys.executable,
+                "-m",
+                "evaluation.eval_v01",
+                "--batches",
+                str(
+                    max(
+                        1,
+                        batches
+                    )
+                ),
+                "--sequence-length",
+                "512",
+                "--batch-size",
+                "4",
+            ]
         )
 
     # ========================================================
@@ -2532,7 +3041,7 @@ class AmberApp(tk.Tk):
 
         ttk.Label(
             self.v01_tab,
-            text="Amber 0.1.6",
+            text="Amber 0.1.7",
             style="Title.TLabel"
         ).pack(
             anchor="w",
@@ -3960,6 +4469,104 @@ class AmberApp(tk.Tk):
                     line
                 )
 
+            if line.startswith(
+                "[V01 GEN JSON] "
+            ):
+                try:
+                    payload = json.loads(
+                        line.split(
+                            " ",
+                            3
+                        )[3]
+                    )
+
+                    self.v01_generation_output.delete(
+                        "1.0",
+                        "end"
+                    )
+
+                    answer = payload.get(
+                        "text",
+                        ""
+                    )
+
+                    if not answer:
+                        answer = (
+                            "[Amber n'a produit aucun texte avant EOS]"
+                        )
+
+                    self.v01_generation_output.insert(
+                        "1.0",
+                        answer
+                    )
+
+                    self.v01_eval_status.config(
+                        text=(
+                            f"Génération : "
+                            f"{int(payload.get('generated_tokens', 0))} tokens | "
+                            f"{float(payload.get('tokens_per_second', 0.0)):.1f} tok/s"
+                        )
+                    )
+
+                    self.refresh_v01_eval_status()
+
+                except Exception as exc:
+                    self.v01_eval_status.config(
+                        text=f"Erreur lecture génération : {exc}"
+                    )
+
+            if line.startswith(
+                "[V01 EVAL JSON] "
+            ):
+                try:
+                    payload = json.loads(
+                        line.split(
+                            " ",
+                            3
+                        )[3]
+                    )
+
+                    loss = float(
+                        payload.get(
+                            "validation_loss"
+                        )
+                    )
+
+                    perplexity = float(
+                        payload.get(
+                            "perplexity"
+                        )
+                    )
+
+                    evaluated_tokens = int(
+                        payload.get(
+                            "evaluated_tokens",
+                            0
+                        )
+                    )
+
+                    self.eval_loss_value.config(
+                        text=f"{loss:.4f}"
+                    )
+
+                    self.eval_ppl_value.config(
+                        text=f"{perplexity:.2f}"
+                    )
+
+                    self.v01_eval_status.config(
+                        text=(
+                            f"{evaluated_tokens:,} tokens évalués | "
+                            f"{float(payload.get('tokens_per_second', 0.0)):,.0f} tok/s"
+                        )
+                    )
+
+                    self.refresh_v01_eval_status()
+
+                except Exception as exc:
+                    self.v01_eval_status.config(
+                        text=f"Erreur lecture évaluation : {exc}"
+                    )
+
             v01_match = re.search(
                 (
                     r"\[V01 step=(\d+)\]\s+"
@@ -4304,6 +4911,15 @@ class AmberApp(tk.Tk):
                     self.after(
                         500,
                         self.refresh_v01_status
+                    )
+
+                if hasattr(
+                    self,
+                    "eval_checkpoint_value"
+                ):
+                    self.after(
+                        600,
+                        self.refresh_v01_eval_status
                     )
 
                 self.paused = False
