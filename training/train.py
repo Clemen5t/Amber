@@ -1,4 +1,4 @@
-﻿import argparse
+import argparse
 import sys
 import time
 from dataclasses import asdict
@@ -25,34 +25,11 @@ if hasattr(sys.stderr, "reconfigure"):
 
 
 ROOT = Path(__file__).resolve().parents[1]
-
-DATA_FILE = (
-    ROOT
-    / "data"
-    / "train.txt"
-)
-
-CHECKPOINT_DIR = (
-    ROOT
-    / "checkpoints"
-)
-
-LATEST_CHECKPOINT = (
-    CHECKPOINT_DIR
-    / "amber_seed_latest.pt"
-)
-
-STOP_FILE = (
-    ROOT
-    / "training"
-    / ".stop_requested"
-)
-
-PAUSE_FILE = (
-    ROOT
-    / "training"
-    / ".pause_requested"
-)
+DATA_FILE = ROOT / "data" / "train.txt"
+CHECKPOINT_DIR = ROOT / "checkpoints"
+LATEST_CHECKPOINT = CHECKPOINT_DIR / "amber_seed_latest.pt"
+STOP_FILE = ROOT / "training" / ".stop_requested"
+PAUSE_FILE = ROOT / "training" / ".pause_requested"
 
 
 MODES = {
@@ -61,13 +38,11 @@ MODES = {
         "seq_len": 128,
         "save_every": 50,
     },
-
     "balanced": {
         "batch_size": 8,
         "seq_len": 128,
         "save_every": 50,
     },
-
     "full": {
         "batch_size": 16,
         "seq_len": 192,
@@ -78,23 +53,15 @@ MODES = {
 
 def find_amber_gpu():
     if not torch.cuda.is_available():
-        raise RuntimeError(
-            "ROCm / GPU non disponible."
-        )
+        raise RuntimeError("ROCm / GPU non disponible.")
 
-    for i in range(
-        torch.cuda.device_count()
-    ):
+    for i in range(torch.cuda.device_count()):
         name = torch.cuda.get_device_name(i)
 
         if "7900 XT" in name.upper():
-            return torch.device(
-                f"cuda:{i}"
-            )
+            return torch.device(f"cuda:{i}")
 
-    raise RuntimeError(
-        "AMD Radeon RX 7900 XT introuvable."
-    )
+    raise RuntimeError("AMD Radeon RX 7900 XT introuvable.")
 
 
 def build_batch(
@@ -103,11 +70,12 @@ def build_batch(
     sequence_length,
     device
 ):
-    max_start = (
-        tokens.numel()
-        - sequence_length
-        - 1
-    )
+    max_start = tokens.numel() - sequence_length - 1
+
+    if max_start <= 0:
+        raise RuntimeError(
+            "Corpus trop petit pour la longueur de séquence demandée."
+        )
 
     starts = torch.randint(
         0,
@@ -115,22 +83,14 @@ def build_batch(
         (batch_size,)
     )
 
-    offsets = torch.arange(
-        sequence_length
-    )
+    offsets = torch.arange(sequence_length)
 
-    indices = (
-        starts[:, None]
-        + offsets[None, :]
-    )
+    indices = starts[:, None] + offsets[None, :]
 
     x = tokens[indices]
     y = tokens[indices + 1]
 
-    return (
-        x.to(device),
-        y.to(device)
-    )
+    return x.to(device), y.to(device)
 
 
 def save_checkpoint(
@@ -147,7 +107,7 @@ def save_checkpoint(
     )
 
     checkpoint = {
-        "amber_version": "0.0.3",
+        "amber_version": "0.0.5",
         "step": int(step),
         "loss": float(loss),
         "mode": mode,
@@ -156,19 +116,14 @@ def save_checkpoint(
         "optimizer_state": optimizer.state_dict(),
     }
 
-    temp = (
-        CHECKPOINT_DIR
-        / "amber_seed_latest.tmp"
-    )
+    temp = CHECKPOINT_DIR / "amber_seed_latest.tmp"
 
     torch.save(
         checkpoint,
         temp
     )
 
-    temp.replace(
-        LATEST_CHECKPOINT
-    )
+    temp.replace(LATEST_CHECKPOINT)
 
     print(
         f"[Checkpoint] step {step} saved.",
@@ -205,10 +160,7 @@ def load_checkpoint(
         )
 
     step = int(
-        checkpoint.get(
-            "step",
-            0
-        )
+        checkpoint.get("step", 0)
     )
 
     loss = checkpoint.get(
@@ -217,8 +169,7 @@ def load_checkpoint(
     )
 
     print(
-        f"[Checkpoint] resume step {step} | "
-        f"previous loss = {loss}",
+        f"[Checkpoint] resume step {step} | previous loss = {loss}",
         flush=True
     )
 
@@ -231,6 +182,20 @@ def clear_file(path):
             path.unlink()
     except Exception:
         pass
+
+
+def format_eta(seconds):
+    if seconds is None:
+        return "--:--"
+
+    seconds = max(0, int(seconds))
+    hours, remainder = divmod(seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+
+    if hours:
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+    return f"{minutes:02d}:{seconds:02d}"
 
 
 def main():
@@ -253,33 +218,17 @@ def main():
     )
 
     args = parser.parse_args()
+    settings = MODES[args.mode]
 
-    settings = MODES[
-        args.mode
-    ]
-
-    print(
-        "=" * 64,
-        flush=True
-    )
-
-    print(
-        "AMBER TRAINER 0.0.3",
-        flush=True
-    )
-
-    print(
-        "=" * 64,
-        flush=True
-    )
+    print("=" * 72, flush=True)
+    print("AMBER TRAINER 0.0.5", flush=True)
+    print("=" * 72, flush=True)
 
     device = find_amber_gpu()
 
     print(
         "GPU :",
-        torch.cuda.get_device_name(
-            device
-        ),
+        torch.cuda.get_device_name(device),
         flush=True
     )
 
@@ -291,14 +240,18 @@ def main():
 
     tokenizer = AmberByteTokenizer()
 
+    if not DATA_FILE.exists():
+        raise RuntimeError(
+            f"Corpus introuvable : {DATA_FILE}"
+        )
+
     text = DATA_FILE.read_text(
         encoding="utf-8"
     )
 
-    encoded = tokenizer.encode(
-        text
-    )
+    encoded = tokenizer.encode(text)
 
+    # Amber Seed utilise encore ce mini corpus de validation.
     encoded = encoded * 32
 
     tokens = torch.tensor(
@@ -325,10 +278,7 @@ def main():
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=3e-4,
-        betas=(
-            0.9,
-            0.95
-        ),
+        betas=(0.9, 0.95),
         weight_decay=0.1
     )
 
@@ -338,34 +288,22 @@ def main():
         device
     )
 
-    target_step = int(
-        args.target_step
-    )
+    target_step = int(args.target_step)
 
     if target_step <= start_step:
         print(
-            f"Target {target_step} already reached. "
-            f"Current step = {start_step}.",
+            f"Target {target_step} already reached. Current step = {start_step}.",
             flush=True
         )
-
         return
 
-    clear_file(
-        STOP_FILE
-    )
+    clear_file(STOP_FILE)
+    clear_file(PAUSE_FILE)
 
-    clear_file(
-        PAUSE_FILE
-    )
-
-    governor = TrainingGovernor(
-        args.mode
-    )
+    governor = TrainingGovernor(args.mode)
 
     print(
-        f"Parameters : "
-        f"{model.parameter_count():,}",
+        f"Parameters : {model.parameter_count():,}",
         flush=True
     )
 
@@ -380,34 +318,21 @@ def main():
     )
 
     print(
-        f"Training from {start_step + 1} "
-        f"to {target_step}",
+        f"Training from {start_step + 1} to {target_step}",
         flush=True
     )
 
-    print(
-        "",
-        flush=True
-    )
+    print("", flush=True)
 
-    first_session_loss = None
     last_loss = previous_loss
-
     started_at = time.time()
 
     for step in range(
         start_step + 1,
         target_step + 1
     ):
-
-        # ----------------------------------------------------
-        # STOP AVANT ETAPE
-        # ----------------------------------------------------
-
         if STOP_FILE.exists():
-            clear_file(
-                STOP_FILE
-            )
+            clear_file(STOP_FILE)
 
             save_checkpoint(
                 model,
@@ -422,15 +347,9 @@ def main():
                 "[Amber] Clean stop completed.",
                 flush=True
             )
-
             return
 
-        # ----------------------------------------------------
-        # PAUSE UTILISATEUR
-        # ----------------------------------------------------
-
         if PAUSE_FILE.exists():
-
             save_checkpoint(
                 model,
                 optimizer,
@@ -446,15 +365,9 @@ def main():
             )
 
             while PAUSE_FILE.exists():
-
                 if STOP_FILE.exists():
-                    clear_file(
-                        STOP_FILE
-                    )
-
-                    clear_file(
-                        PAUSE_FILE
-                    )
+                    clear_file(STOP_FILE)
+                    clear_file(PAUSE_FILE)
 
                     save_checkpoint(
                         model,
@@ -469,26 +382,18 @@ def main():
                         "[Amber] Clean stop completed.",
                         flush=True
                     )
-
                     return
 
-                time.sleep(
-                    0.5
-                )
+                time.sleep(0.5)
 
             print(
                 "[Amber] Training resumed.",
                 flush=True
             )
 
-        # ----------------------------------------------------
-        # JEU DETECTE
-        # ----------------------------------------------------
-
         game = governor.active_game()
 
         if game:
-
             save_checkpoint(
                 model,
                 optimizer,
@@ -509,11 +414,8 @@ def main():
             )
 
             while governor.active_game():
-
                 if STOP_FILE.exists():
-                    clear_file(
-                        STOP_FILE
-                    )
+                    clear_file(STOP_FILE)
 
                     save_checkpoint(
                         model,
@@ -528,21 +430,14 @@ def main():
                         "[Amber] Clean stop completed.",
                         flush=True
                     )
-
                     return
 
-                time.sleep(
-                    2
-                )
+                time.sleep(2)
 
             print(
                 "[Governor] Game closed. Training resumed.",
                 flush=True
             )
-
-        # ----------------------------------------------------
-        # TRAIN STEP
-        # ----------------------------------------------------
 
         model.train()
 
@@ -582,23 +477,13 @@ def main():
 
         last_loss = current_loss
 
-        if first_session_loss is None:
-            first_session_loss = current_loss
-
         if (
             step == start_step + 1
             or step % 10 == 0
             or step == target_step
         ):
-            elapsed = (
-                time.time()
-                - started_at
-            )
-
-            done = (
-                step
-                - start_step
-            )
+            elapsed = time.time() - started_at
+            done = step - start_step
 
             speed = (
                 done / elapsed
@@ -606,18 +491,28 @@ def main():
                 else 0
             )
 
+            remaining = target_step - step
+            eta_seconds = (
+                remaining / speed
+                if speed > 0
+                else None
+            )
+
+            vram_gb = (
+                torch.cuda.memory_allocated(device)
+                / 1024**3
+            )
+
             print(
                 f"[{step:06d}] "
                 f"loss={current_loss:.4f} | "
-                f"speed={speed:.2f} step/s",
+                f"speed={speed:.2f} step/s | "
+                f"vram={vram_gb:.2f} GB | "
+                f"eta={format_eta(eta_seconds)}",
                 flush=True
             )
 
-        if (
-            step
-            % settings["save_every"]
-            == 0
-        ):
+        if step % settings["save_every"] == 0:
             save_checkpoint(
                 model,
                 optimizer,
@@ -627,15 +522,8 @@ def main():
                 args.mode
             )
 
-        # ----------------------------------------------------
-        # STOP APRES ETAPE
-        # ----------------------------------------------------
-
         if STOP_FILE.exists():
-
-            clear_file(
-                STOP_FILE
-            )
+            clear_file(STOP_FILE)
 
             save_checkpoint(
                 model,
@@ -650,7 +538,6 @@ def main():
                 "[Amber] Clean stop completed.",
                 flush=True
             )
-
             return
 
         governor.throttle()
@@ -664,45 +551,15 @@ def main():
         args.mode
     )
 
-    elapsed = (
-        time.time()
-        - started_at
-    )
+    elapsed = time.time() - started_at
 
-    print(
-        "",
-        flush=True
-    )
-
-    print(
-        "=" * 64,
-        flush=True
-    )
-
-    print(
-        "AMBER TRAINING COMPLETE",
-        flush=True
-    )
-
-    print(
-        f"Final step : {target_step}",
-        flush=True
-    )
-
-    print(
-        f"Final loss : {last_loss:.4f}",
-        flush=True
-    )
-
-    print(
-        f"Duration   : {elapsed:.1f} s",
-        flush=True
-    )
-
-    print(
-        "=" * 64,
-        flush=True
-    )
+    print("", flush=True)
+    print("=" * 72, flush=True)
+    print("AMBER TRAINING COMPLETE", flush=True)
+    print(f"Final step : {target_step}", flush=True)
+    print(f"Final loss : {last_loss:.4f}", flush=True)
+    print(f"Duration   : {elapsed:.1f} s", flush=True)
+    print("=" * 72, flush=True)
 
 
 if __name__ == "__main__":
