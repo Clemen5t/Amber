@@ -46,6 +46,14 @@ from tokenizer.train_tokenizer import (
     tokenizer_status,
 )
 from amber.updater import open_updater_window
+from amber.dataset_v02 import (
+    MANIFEST_FILE as V02_MANIFEST_FILE,
+    load_v02_manifest,
+)
+from training.data_v02 import (
+    CACHE_META as V02_CACHE_META,
+    load_cache_metadata as load_v02_cache_metadata,
+)
 from inference.chat import generate_reply
 
 
@@ -101,6 +109,28 @@ V01_AUTOTUNE_FILE = (
     / "amber_v01_autotune.json"
 )
 
+V02_STATUS_FILE = (
+    CHECKPOINTS
+    / "amber_v02_status.json"
+)
+
+V02_CHECKPOINT = (
+    CHECKPOINTS
+    / "amber_v02_latest.pt"
+)
+
+V02_STOP_FILE = (
+    ROOT
+    / "training"
+    / ".v02_stop_requested"
+)
+
+V02_PAUSE_FILE = (
+    ROOT
+    / "training"
+    / ".v02_pause_requested"
+)
+
 
 class AmberApp(tk.Tk):
 
@@ -108,7 +138,7 @@ class AmberApp(tk.Tk):
         super().__init__()
 
         self.title(
-            "Amber 0.1.7"
+            "Amber 0.2.0"
         )
 
         self.geometry(
@@ -178,6 +208,28 @@ class AmberApp(tk.Tk):
         self.v01_eval_batches = tk.StringVar(
             value="50"
         )
+
+        self.v02_dataset_target = tk.StringVar(
+            value="500000000"
+        )
+
+        self.v02_train_target = tk.StringVar(
+            value="400000000"
+        )
+
+        self.v02_schedule_tokens = tk.StringVar(
+            value="400000000"
+        )
+
+        self.v02_mode = tk.StringVar(
+            value="FULL"
+        )
+
+        self.v02_full_vram_target = tk.StringVar(
+            value="15"
+        )
+
+        self.v02_paused = False
 
         self.current_step = 0
         self.current_loss = None
@@ -376,7 +428,7 @@ class AmberApp(tk.Tk):
 
         ttk.Label(
             root,
-            text="AI Control Center · Amber Model 0.1.7",
+            text="AI Control Center · Amber Model 0.2.0",
             style="Subtitle.TLabel"
         ).pack(
             anchor="w",
@@ -420,6 +472,10 @@ class AmberApp(tk.Tk):
             self.notebook
         )
 
+        self.v02_tab = ttk.Frame(
+            self.notebook
+        )
+
         self.notebook.add(
             self.dashboard_tab,
             text="Dashboard"
@@ -455,6 +511,11 @@ class AmberApp(tk.Tk):
             text="Évaluation 0.1"
         )
 
+        self.notebook.add(
+            self.v02_tab,
+            text="Amber 0.2"
+        )
+
         self._build_dashboard()
         self._build_chat()
         self._build_training()
@@ -462,6 +523,7 @@ class AmberApp(tk.Tk):
         self._build_dataset()
         self._build_v01()
         self._build_v01_evaluation()
+        self._build_v02()
 
     # ========================================================
     # DASHBOARD
@@ -580,7 +642,7 @@ class AmberApp(tk.Tk):
         )
 
         self.log(
-            "Amber Control Center 0.1.7 ready."
+            "Amber Control Center 0.2.0 ready."
         )
 
     def _timestamp(self):
@@ -3041,7 +3103,7 @@ class AmberApp(tk.Tk):
 
         ttk.Label(
             self.v01_tab,
-            text="Amber 0.1.7",
+            text="Amber 0.2.0",
             style="Title.TLabel"
         ).pack(
             anchor="w",
@@ -4044,6 +4106,807 @@ class AmberApp(tk.Tk):
             )
 
     # ========================================================
+    # AMBER 0.2 - CLEAN DATA CONTINUATION
+    # ========================================================
+
+    def _build_v02(self):
+
+        ttk.Label(
+            self.v02_tab,
+            text="Amber 0.2 · Clean Data Continuation",
+            style="Title.TLabel"
+        ).pack(
+            anchor="w",
+            pady=(18, 4)
+        )
+
+        ttk.Label(
+            self.v02_tab,
+            text=(
+                "Nettoie fortement le Wiki markup, limite Wiktionnaire/Wikiquote, "
+                "privilégie la prose française et continue depuis les poids 0.1."
+            ),
+            style="Subtitle.TLabel"
+        ).pack(
+            anchor="w",
+            pady=(0, 10)
+        )
+
+        cards = ttk.Frame(
+            self.v02_tab
+        )
+
+        cards.pack(
+            fill="x",
+            pady=(0, 10)
+        )
+
+        self.v02_sources_value = self._card(
+            cards,
+            "SOURCES"
+        )
+
+        self.v02_dataset_value = self._card(
+            cards,
+            "CORPUS PROPRE"
+        )
+
+        self.v02_cache_value = self._card(
+            cards,
+            "CACHE EXACT"
+        )
+
+        self.v02_seen_value = self._card(
+            cards,
+            "TOKENS 0.2"
+        )
+
+        self.v02_lifetime_value = self._card(
+            cards,
+            "TOKENS LIFETIME"
+        )
+
+        self.v02_loss_value = self._card(
+            cards,
+            "LOSS / VAL"
+        )
+
+        pipeline = ttk.Frame(
+            self.v02_tab
+        )
+
+        pipeline.pack(
+            fill="x",
+            pady=5
+        )
+
+        ttk.Label(
+            pipeline,
+            text="Corpus cible :"
+        ).pack(
+            side="left"
+        )
+
+        ttk.Entry(
+            pipeline,
+            textvariable=self.v02_dataset_target,
+            width=13
+        ).pack(
+            side="left",
+            padx=(5, 8)
+        )
+
+        ttk.Button(
+            pipeline,
+            text="1 · Préparer corpus propre",
+            command=self.prepare_v02_dataset_ui
+        ).pack(
+            side="left",
+            padx=6
+        )
+
+        ttk.Button(
+            pipeline,
+            text="2 · Construire cache exact",
+            command=self.build_v02_cache
+        ).pack(
+            side="left",
+            padx=6
+        )
+
+        ttk.Button(
+            pipeline,
+            text="Ouvrir Dataset",
+            command=lambda: self.notebook.select(
+                self.dataset_tab
+            )
+        ).pack(
+            side="left",
+            padx=6
+        )
+
+        ttk.Label(
+            self.v02_tab,
+            text=(
+                "Pour viser 500 M tokens propres : ajoute en priorité "
+                "Wikipedia FR puis Wikisource FR dans l'onglet Dataset."
+            ),
+            style="Subtitle.TLabel"
+        ).pack(
+            anchor="w",
+            pady=(2, 8)
+        )
+
+        train_row = ttk.Frame(
+            self.v02_tab
+        )
+
+        train_row.pack(
+            fill="x",
+            pady=5
+        )
+
+        ttk.Label(
+            train_row,
+            text="Continuation :"
+        ).pack(
+            side="left"
+        )
+
+        ttk.Entry(
+            train_row,
+            textvariable=self.v02_train_target,
+            width=13
+        ).pack(
+            side="left",
+            padx=(5, 8)
+        )
+
+        ttk.Label(
+            train_row,
+            text="Horizon LR :"
+        ).pack(
+            side="left",
+            padx=(5, 3)
+        )
+
+        ttk.Entry(
+            train_row,
+            textvariable=self.v02_schedule_tokens,
+            width=13
+        ).pack(
+            side="left",
+            padx=(0, 8)
+        )
+
+        for mode in (
+            "ECO",
+            "BALANCED",
+            "FULL"
+        ):
+            ttk.Radiobutton(
+                train_row,
+                text=mode,
+                variable=self.v02_mode,
+                value=mode
+            ).pack(
+                side="left",
+                padx=(0, 8)
+            )
+
+        ttk.Label(
+            train_row,
+            text="VRAM FULL :"
+        ).pack(
+            side="left",
+            padx=(6, 3)
+        )
+
+        ttk.Combobox(
+            train_row,
+            textvariable=self.v02_full_vram_target,
+            values=[
+                "AUTO",
+                "10",
+                "15"
+            ],
+            state="readonly",
+            width=6
+        ).pack(
+            side="left"
+        )
+
+        action_row = ttk.Frame(
+            self.v02_tab
+        )
+
+        action_row.pack(
+            fill="x",
+            pady=6
+        )
+
+        ttk.Button(
+            action_row,
+            text="3 · Démarrer / Reprendre 0.2",
+            command=self.start_v02_training
+        ).pack(
+            side="left",
+            padx=(0, 7)
+        )
+
+        self.v02_pause_button = ttk.Button(
+            action_row,
+            text="Pause",
+            command=self.toggle_v02_pause
+        )
+
+        self.v02_pause_button.pack(
+            side="left",
+            padx=7
+        )
+
+        ttk.Button(
+            action_row,
+            text="Sauvegarder et arrêter",
+            command=self.stop_v02_training
+        ).pack(
+            side="left",
+            padx=7
+        )
+
+        self.v02_status_label = ttk.Label(
+            self.v02_tab,
+            text="Prêt"
+        )
+
+        self.v02_status_label.pack(
+            anchor="w",
+            pady=(4, 2)
+        )
+
+        self.v02_progress = ttk.Progressbar(
+            self.v02_tab,
+            orient="horizontal",
+            mode="determinate"
+        )
+
+        self.v02_progress.pack(
+            fill="x",
+            pady=(2, 3)
+        )
+
+        self.v02_progress_text = ttk.Label(
+            self.v02_tab,
+            text="0 / 400.0 M tokens supplémentaires"
+        )
+
+        self.v02_progress_text.pack(
+            anchor="w"
+        )
+
+        self.v02_metrics = ttk.Label(
+            self.v02_tab,
+            text="Vitesse : - | VRAM : - | ETA : -"
+        )
+
+        self.v02_metrics.pack(
+            anchor="w",
+            pady=(2, 5)
+        )
+
+        self.v02_console = ScrolledText(
+            self.v02_tab,
+            bg="#0b0b0f",
+            fg="#e5e5ea",
+            insertbackground="white",
+            relief="flat",
+            font=("Consolas", 9),
+            height=15
+        )
+
+        self.v02_console.pack(
+            fill="both",
+            expand=True
+        )
+
+        self.refresh_v02_status()
+
+    def _read_v02_status_file(self):
+
+        if not V02_STATUS_FILE.exists():
+            return {}
+
+        try:
+            return json.loads(
+                V02_STATUS_FILE.read_text(
+                    encoding="utf-8"
+                )
+            )
+        except Exception:
+            return {}
+
+    def _v02_log(
+        self,
+        text
+    ):
+        self.v02_console.insert(
+            "end",
+            self._timestamped_line(
+                str(text)
+            )
+        )
+
+        self.v02_console.see(
+            "end"
+        )
+
+    def refresh_v02_status(self):
+
+        sources = list_raw_sources()
+        manifest = load_v02_manifest()
+        cache = load_v02_cache_metadata()
+        status = self._read_v02_status_file()
+
+        source_names = " ".join(
+            item.get(
+                "name",
+                ""
+            ).lower()
+            for item in sources
+        )
+
+        has_wikipedia = (
+            "frwiki-" in source_names
+            or "wikipedia" in source_names
+        )
+
+        self.v02_sources_value.config(
+            text=(
+                f"{len(sources)} · "
+                + (
+                    "Wikipedia OK"
+                    if has_wikipedia
+                    else "Wikipedia MANQUANT"
+                )
+            )
+        )
+
+        approx = int(
+            manifest.get(
+                "approx_tokens",
+                0
+            )
+        )
+
+        self.v02_dataset_value.config(
+            text=(
+                format_tokens(
+                    approx
+                )
+                if approx
+                else "À préparer"
+            )
+        )
+
+        exact = 0
+
+        if cache:
+            exact = int(
+                cache.get(
+                    "train",
+                    {}
+                ).get(
+                    "tokens",
+                    0
+                )
+            )
+
+        self.v02_cache_value.config(
+            text=(
+                format_tokens(
+                    exact
+                )
+                if exact
+                else "À construire"
+            )
+        )
+
+        seen = int(
+            status.get(
+                "tokens_seen",
+                0
+            )
+        )
+
+        self.v02_seen_value.config(
+            text=format_tokens(
+                seen
+            )
+        )
+
+        self.v02_lifetime_value.config(
+            text=format_tokens(
+                100_011_008
+                + seen
+            )
+        )
+
+        train_loss = status.get(
+            "train_loss"
+        )
+
+        val_loss = status.get(
+            "val_loss"
+        )
+
+        self.v02_loss_value.config(
+            text=(
+                "-"
+                if train_loss is None
+                else (
+                    f"{float(train_loss):.3f} / "
+                    + (
+                        f"{float(val_loss):.3f}"
+                        if val_loss is not None
+                        else "-"
+                    )
+                )
+            )
+        )
+
+        try:
+            target = int(
+                self.v02_train_target.get()
+            )
+        except Exception:
+            target = 400_000_000
+
+        self.v02_progress.configure(
+            maximum=max(
+                target,
+                1
+            ),
+            value=min(
+                seen,
+                target
+            )
+        )
+
+        self.v02_progress_text.config(
+            text=(
+                f"{format_tokens(seen)} / "
+                f"{format_tokens(target)} tokens supplémentaires"
+            )
+        )
+
+        if cache:
+            self.v02_status_label.config(
+                text=(
+                    "Prêt pour continuation 0.2 — "
+                    f"{exact:,} tokens train exacts"
+                )
+            )
+
+        elif manifest:
+            self.v02_status_label.config(
+                text=(
+                    "Corpus propre préparé — construis le cache exact."
+                )
+            )
+
+        else:
+            self.v02_status_label.config(
+                text=(
+                    "Étape 1 : prépare le corpus propre 0.2."
+                )
+            )
+
+    def prepare_v02_dataset_ui(self):
+
+        if (
+            self.process is not None
+            and self.process.poll() is None
+        ):
+            messagebox.showwarning(
+                "Amber 0.2",
+                "Une tâche Amber est déjà en cours."
+            )
+            return
+
+        try:
+            target = int(
+                self.v02_dataset_target.get()
+            )
+
+        except ValueError:
+            messagebox.showerror(
+                "Amber 0.2",
+                "La cible corpus doit être un entier."
+            )
+            return
+
+        names = " ".join(
+            item.get(
+                "name",
+                ""
+            ).lower()
+            for item in list_raw_sources()
+        )
+
+        if (
+            "frwiki-" not in names
+            and "wikipedia" not in names
+        ):
+            if not messagebox.askyesno(
+                "Amber 0.2",
+                (
+                    "Wikipedia FR n'est pas encore présent.\n\n"
+                    "Tu peux quand même préparer ce qui existe, mais "
+                    "la cible 500 M ne sera probablement pas atteinte.\n\n"
+                    "Continuer quand même ?"
+                )
+            ):
+                self.notebook.select(
+                    self.dataset_tab
+                )
+                return
+
+        self.v02_status_label.config(
+            text="Nettoyage strict du corpus en cours..."
+        )
+
+        self._run_command(
+            [
+                sys.executable,
+                "-m",
+                "amber.dataset_v02",
+                "--prepare",
+                "--target-tokens",
+                str(
+                    target
+                ),
+            ]
+        )
+
+    def build_v02_cache(self):
+
+        if (
+            self.process is not None
+            and self.process.poll() is None
+        ):
+            messagebox.showwarning(
+                "Amber 0.2",
+                "Une tâche Amber est déjà en cours."
+            )
+            return
+
+        manifest = load_v02_manifest()
+
+        if not manifest:
+            messagebox.showwarning(
+                "Amber 0.2",
+                "Prépare d'abord le corpus propre 0.2."
+            )
+            return
+
+        self.v02_status_label.config(
+            text="Tokenisation exacte Amber 0.2..."
+        )
+
+        self._run_command(
+            [
+                sys.executable,
+                "-m",
+                "training.data_v02",
+                "--build",
+            ]
+        )
+
+    def start_v02_training(self):
+
+        if (
+            self.process is not None
+            and self.process.poll() is None
+        ):
+            messagebox.showwarning(
+                "Amber 0.2",
+                "Une tâche Amber est déjà en cours."
+            )
+            return
+
+        if not V01_CHECKPOINT.exists():
+            messagebox.showwarning(
+                "Amber 0.2",
+                (
+                    "Le checkpoint final Amber 0.1 est requis "
+                    "pour initialiser 0.2."
+                )
+            )
+            return
+
+        cache = load_v02_cache_metadata()
+
+        if not cache:
+            messagebox.showwarning(
+                "Amber 0.2",
+                "Construis d'abord le cache exact 0.2."
+            )
+            return
+
+        try:
+            target = int(
+                self.v02_train_target.get()
+            )
+
+            schedule = int(
+                self.v02_schedule_tokens.get()
+            )
+
+        except ValueError:
+            messagebox.showerror(
+                "Amber 0.2",
+                "Cible et horizon doivent être des entiers."
+            )
+            return
+
+        if (
+            target <= 0
+            or schedule <= 0
+            or target > schedule
+        ):
+            messagebox.showerror(
+                "Amber 0.2",
+                "Vérifie la cible et l'horizon LR."
+            )
+            return
+
+        status = self._read_v02_status_file()
+        existing_schedule = status.get(
+            "schedule_tokens"
+        )
+
+        if (
+            int(
+                status.get(
+                    "tokens_seen",
+                    0
+                )
+            ) > 0
+            and existing_schedule is not None
+            and int(
+                existing_schedule
+            ) != schedule
+        ):
+            messagebox.showwarning(
+                "Amber 0.2",
+                (
+                    "L'horizon LR du checkpoint 0.2 est différent. "
+                    "Remets la valeur utilisée au démarrage."
+                )
+            )
+            return
+
+        for path in (
+            V02_STOP_FILE,
+            V02_PAUSE_FILE
+        ):
+            try:
+                if path.exists():
+                    path.unlink()
+            except Exception:
+                pass
+
+        self.v02_paused = False
+
+        self.v02_pause_button.config(
+            text="Pause"
+        )
+
+        command = [
+            sys.executable,
+            "-m",
+            "training.train_v02",
+            "--mode",
+            self.v02_mode.get().lower(),
+            "--target-tokens",
+            str(
+                target
+            ),
+            "--schedule-tokens",
+            str(
+                schedule
+            ),
+        ]
+
+        if self.v02_mode.get().upper() == "FULL":
+            target_vram = self.v02_full_vram_target.get().strip()
+
+            if target_vram.upper() != "AUTO":
+                command.extend(
+                    [
+                        "--full-vram-target",
+                        target_vram,
+                    ]
+                )
+
+        self.v02_status_label.config(
+            text="Continuation Amber 0.2 en cours..."
+        )
+
+        self._run_command(
+            command
+        )
+
+    def toggle_v02_pause(self):
+
+        if (
+            self.process is None
+            or self.process.poll() is not None
+        ):
+            return
+
+        try:
+            if not self.v02_paused:
+                V02_PAUSE_FILE.write_text(
+                    "pause",
+                    encoding="utf-8"
+                )
+
+                self.v02_paused = True
+
+                self.v02_pause_button.config(
+                    text="Reprendre"
+                )
+
+                self.v02_status_label.config(
+                    text="Pause demandée..."
+                )
+
+            else:
+                if V02_PAUSE_FILE.exists():
+                    V02_PAUSE_FILE.unlink()
+
+                self.v02_paused = False
+
+                self.v02_pause_button.config(
+                    text="Pause"
+                )
+
+                self.v02_status_label.config(
+                    text="Reprise..."
+                )
+
+        except Exception as exc:
+            messagebox.showerror(
+                "Amber 0.2",
+                str(exc)
+            )
+
+    def stop_v02_training(self):
+
+        if (
+            self.process is None
+            or self.process.poll() is not None
+        ):
+            return
+
+        try:
+            V02_STOP_FILE.write_text(
+                "stop",
+                encoding="utf-8"
+            )
+
+            self.v02_status_label.config(
+                text="Sauvegarde et arrêt 0.2..."
+            )
+
+        except Exception as exc:
+            messagebox.showerror(
+                "Amber 0.2",
+                str(exc)
+            )
+
+    # ========================================================
     # CHECKPOINTS
     # ========================================================
 
@@ -4567,6 +5430,178 @@ class AmberApp(tk.Tk):
                         text=f"Erreur lecture évaluation : {exc}"
                     )
 
+            if (
+                hasattr(
+                    self,
+                    "v02_console"
+                )
+                and (
+                    "V02" in line
+                    or "AMBER 0.2" in line
+                )
+            ):
+                self._v02_log(
+                    line
+                )
+
+            v02_match = re.search(
+                (
+                    r"\[V02 step=(\d+)\]\s+"
+                    r"loss=([0-9.]+)\s+\|\s+"
+                    r"val=([^\s]+)\s+\|\s+"
+                    r"tokens=([0-9,]+)/([0-9,]+)\s+\|\s+"
+                    r"speed=([0-9,]+)\s+tok/s\s+\|\s+"
+                    r"lr=([^\s]+)\s+\|\s+"
+                    r"vram=([0-9.]+)\s+GB\s+\|\s+"
+                    r"(?:peak=([0-9.]+)\s+GB\s+\|\s+)?"
+                    r"(?:reserved=([0-9.]+)\s+GB\s+\|\s+)?"
+                    r"eta=([^\s]+)"
+                ),
+                line
+            )
+
+            if v02_match:
+                step = int(
+                    v02_match.group(1)
+                )
+
+                loss = float(
+                    v02_match.group(2)
+                )
+
+                val_text = v02_match.group(3)
+
+                tokens_seen = int(
+                    v02_match.group(4).replace(
+                        ",",
+                        ""
+                    )
+                )
+
+                target_tokens = int(
+                    v02_match.group(5).replace(
+                        ",",
+                        ""
+                    )
+                )
+
+                speed = int(
+                    v02_match.group(6).replace(
+                        ",",
+                        ""
+                    )
+                )
+
+                vram = float(
+                    v02_match.group(8)
+                )
+
+                peak = (
+                    float(
+                        v02_match.group(9)
+                    )
+                    if v02_match.group(9)
+                    else vram
+                )
+
+                reserved = (
+                    float(
+                        v02_match.group(10)
+                    )
+                    if v02_match.group(10)
+                    else peak
+                )
+
+                eta = v02_match.group(11)
+
+                self.v02_seen_value.config(
+                    text=format_tokens(
+                        tokens_seen
+                    )
+                )
+
+                self.v02_lifetime_value.config(
+                    text=format_tokens(
+                        100_011_008
+                        + tokens_seen
+                    )
+                )
+
+                self.v02_loss_value.config(
+                    text=(
+                        f"{loss:.3f} / "
+                        f"{val_text}"
+                    )
+                )
+
+                self.v02_progress.configure(
+                    maximum=max(
+                        target_tokens,
+                        1
+                    ),
+                    value=min(
+                        tokens_seen,
+                        target_tokens
+                    )
+                )
+
+                self.v02_progress_text.config(
+                    text=(
+                        f"{format_tokens(tokens_seen)} / "
+                        f"{format_tokens(target_tokens)} "
+                        "tokens supplémentaires"
+                    )
+                )
+
+                self.v02_metrics.config(
+                    text=(
+                        f"Step : {step:,} | "
+                        f"Vitesse : {speed:,} tok/s | "
+                        f"VRAM : {vram:.2f} instant. / "
+                        f"{peak:.2f} pic / "
+                        f"{reserved:.2f} réservée | "
+                        f"ETA : {eta}"
+                    )
+                )
+
+                self.v02_status_label.config(
+                    text=(
+                        "Continuation 0.2 — "
+                        f"{tokens_seen / target_tokens * 100:.2f} %"
+                    )
+                )
+
+            if "[V02 DATASET COMPLETE]" in line:
+                self.v02_status_label.config(
+                    text="Corpus propre Amber 0.2 préparé."
+                )
+                self.refresh_v02_status()
+
+            if "[V02 DATASET WARNING]" in line:
+                self.v02_status_label.config(
+                    text=(
+                        "Corpus insuffisant : ajoute Wikipedia FR / Wikisource FR."
+                    )
+                )
+
+            if "[V02 CACHE COMPLETE]" in line:
+                self.v02_status_label.config(
+                    text="Cache exact Amber 0.2 construit."
+                )
+                self.refresh_v02_status()
+
+            if "[V02] Arrêt propre terminé." in line:
+                self.v02_status_label.config(
+                    text="Amber 0.2 arrêté proprement."
+                )
+                self.refresh_v02_status()
+
+            if "AMBER 0.2 CONTINUATION TARGET REACHED" in line:
+                self.v02_status_label.config(
+                    text="Amber 0.2 : objectif atteint."
+                )
+                self.refresh_v02_status()
+
             v01_match = re.search(
                 (
                     r"\[V01 step=(\d+)\]\s+"
@@ -4920,6 +5955,15 @@ class AmberApp(tk.Tk):
                     self.after(
                         600,
                         self.refresh_v01_eval_status
+                    )
+
+                if hasattr(
+                    self,
+                    "v02_status_label"
+                ):
+                    self.after(
+                        700,
+                        self.refresh_v02_status
                     )
 
                 self.paused = False
