@@ -96,6 +96,11 @@ V01_CHECKPOINT = (
     / "amber_v01_latest.pt"
 )
 
+V01_AUTOTUNE_FILE = (
+    CHECKPOINTS
+    / "amber_v01_autotune.json"
+)
+
 
 class AmberApp(tk.Tk):
 
@@ -103,7 +108,7 @@ class AmberApp(tk.Tk):
         super().__init__()
 
         self.title(
-            "Amber 0.1.4"
+            "Amber 0.1.5"
         )
 
         self.geometry(
@@ -339,7 +344,7 @@ class AmberApp(tk.Tk):
 
         ttk.Label(
             root,
-            text="AI Control Center · Amber Model 0.1.4",
+            text="AI Control Center · Amber Model 0.1.5",
             style="Subtitle.TLabel"
         ).pack(
             anchor="w",
@@ -533,7 +538,7 @@ class AmberApp(tk.Tk):
         )
 
         self.log(
-            "Amber Control Center 0.1.4 ready."
+            "Amber Control Center 0.1.5 ready."
         )
 
     def _timestamp(self):
@@ -2523,7 +2528,7 @@ class AmberApp(tk.Tk):
 
         ttk.Label(
             self.v01_tab,
-            text="Amber 0.1.4",
+            text="Amber 0.1.5",
             style="Title.TLabel"
         ).pack(
             anchor="w",
@@ -2603,6 +2608,15 @@ class AmberApp(tk.Tk):
             controls,
             text="Tester Amber 0.1",
             command=self.test_v01_model
+        ).pack(
+            side="left",
+            padx=7
+        )
+
+        ttk.Button(
+            controls,
+            text="Auto-Tuner RX 7900 XT",
+            command=self.run_v01_autotune
         ).pack(
             side="left",
             padx=7
@@ -2763,6 +2777,16 @@ class AmberApp(tk.Tk):
             pady=(1, 0)
         )
 
+        self.v01_autotune_text = ttk.Label(
+            self.v01_tab,
+            text="Auto-Tuner FULL : non lancé"
+        )
+
+        self.v01_autotune_text.pack(
+            anchor="w",
+            pady=(1, 0)
+        )
+
         self.v01_metrics = ttk.Label(
             self.v01_tab,
             text="Vitesse : - | VRAM : - | ETA : -"
@@ -2819,6 +2843,20 @@ class AmberApp(tk.Tk):
         except Exception:
             return {}
 
+    def _read_v01_autotune_file(self):
+
+        if not V01_AUTOTUNE_FILE.exists():
+            return {}
+
+        try:
+            return json.loads(
+                V01_AUTOTUNE_FILE.read_text(
+                    encoding="utf-8"
+                )
+            )
+        except Exception:
+            return {}
+
     def refresh_v01_status(self):
 
         tok = tokenizer_status()
@@ -2840,6 +2878,26 @@ class AmberApp(tk.Tk):
 
         cache = load_v01_cache_metadata()
         status = self._read_v01_status_file()
+        autotune = self._read_v01_autotune_file()
+
+        if autotune.get("best"):
+            best = autotune["best"]
+
+            self.v01_autotune_text.config(
+                text=(
+                    "Auto-Tuner FULL : "
+                    f"MB {int(best.get('micro_batch', 1))} × "
+                    f"accum {int(best.get('gradient_accumulation', 16))} | "
+                    f"checkpoint "
+                    f"{'ON' if best.get('checkpointing', True) else 'OFF'} | "
+                    f"{float(best.get('tokens_per_second', 0)):,.0f} tok/s"
+                )
+            )
+
+        else:
+            self.v01_autotune_text.config(
+                text="Auto-Tuner FULL : non lancé"
+            )
 
         self.v01_model_value.config(
             text=f"{params / 1_000_000:.2f} M"
@@ -3047,6 +3105,59 @@ class AmberApp(tk.Tk):
                 sys.executable,
                 "-m",
                 "tests.test_v01"
+            ]
+        )
+
+    def run_v01_autotune(self):
+
+        if (
+            self.process is not None
+            and self.process.poll() is None
+        ):
+            messagebox.showwarning(
+                "Amber Auto-Tuner",
+                (
+                    "Arrête proprement l'entraînement avant de lancer "
+                    "l'Auto-Tuner."
+                )
+            )
+            return
+
+        if not V01_CHECKPOINT.exists():
+            messagebox.showwarning(
+                "Amber Auto-Tuner",
+                (
+                    "Aucun checkpoint Amber 0.1 actif. "
+                    "Lance d'abord un entraînement et sauvegarde-le."
+                )
+            )
+            return
+
+        if not messagebox.askyesno(
+            "Amber Auto-Tuner RX 7900 XT",
+            (
+                "Tester automatiquement plusieurs configurations FULL ?\n\n"
+                "Amber va comparer micro-batch 1/2/4/8/16, avec et sans "
+                "gradient checkpointing, sans modifier ni sauvegarder "
+                "les poids du checkpoint.\n\n"
+                "Une marge de sécurité de 10 % de VRAM est conservée."
+            )
+        ):
+            return
+
+        self.v01_status_label.config(
+            text="Auto-Tuner RX 7900 XT en cours..."
+        )
+
+        self._v01_log(
+            "[AUTOTUNE] Démarrage du benchmark FULL."
+        )
+
+        self._run_command(
+            [
+                sys.executable,
+                "-m",
+                "training.autotune_v01"
             ]
         )
 
@@ -3761,6 +3872,7 @@ class AmberApp(tk.Tk):
                 )
                 and (
                     "V01" in line
+                    or "AUTOTUNE" in line
                     or "CACHE" in line
                     or "AMBER 0.1" in line
                     or "Parameters" in line
@@ -3780,6 +3892,7 @@ class AmberApp(tk.Tk):
                     r"speed=([0-9,]+)\s+tok/s\s+\|\s+"
                     r"lr=([^\s]+)\s+\|\s+"
                     r"vram=([0-9.]+)\s+GB\s+\|\s+"
+                    r"(?:reserved=([0-9.]+)\s+GB\s+\|\s+)?"
                     r"eta=([^\s]+)"
                 ),
                 line
@@ -3821,7 +3934,15 @@ class AmberApp(tk.Tk):
                     v01_match.group(8)
                 )
 
-                eta = v01_match.group(9)
+                reserved_vram = (
+                    float(
+                        v01_match.group(9)
+                    )
+                    if v01_match.group(9)
+                    else vram
+                )
+
+                eta = v01_match.group(10)
 
                 self.v01_seen_value.config(
                     text=format_tokens(
@@ -3858,7 +3979,8 @@ class AmberApp(tk.Tk):
                     text=(
                         f"Step : {step:,} | "
                         f"Vitesse : {speed:,} tok/s | "
-                        f"VRAM : {vram:.2f} GB | "
+                        f"VRAM : {vram:.2f} GB allouée / "
+                        f"{reserved_vram:.2f} GB réservée | "
                         f"ETA : {eta}"
                     )
                 )
@@ -4038,6 +4160,12 @@ class AmberApp(tk.Tk):
                 self.training_status.config(
                     text="Objectif atteint"
                 )
+
+            if "[AUTOTUNE BEST]" in line:
+                self.v01_status_label.config(
+                    text="Auto-Tuner terminé — profil FULL prêt."
+                )
+                self.refresh_v01_status()
 
             if "[CACHE COMPLETE]" in line:
                 self.v01_status_label.config(
