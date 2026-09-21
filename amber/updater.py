@@ -171,7 +171,7 @@ def git_status():
     if status["update_available"]:
         status["message"] = f"{status['behind']} mise(s) à jour disponible(s)."
     else:
-        status["message"] = "Amber est à jour."
+        status["message"] = f"Amber {CURRENT_VERSION} est à jour."
 
     return status
 
@@ -264,7 +264,7 @@ def publish_baseline():
         commit = _git(
             "commit",
             "-m",
-            "Amber 0.0.4 baseline",
+            f"Amber {CURRENT_VERSION} baseline",
             timeout=90
         )
         if commit.returncode != 0:
@@ -287,7 +287,7 @@ def publish_baseline():
             + "\n\nUne authentification GitHub peut être nécessaire une seule fois."
         )
 
-    return True, "Amber 0.0.4 a été publié sur GitHub."
+    return True, f"Amber {CURRENT_VERSION} a été publié sur GitHub."
 
 
 def tracked_worktree_dirty():
@@ -298,7 +298,18 @@ def tracked_worktree_dirty():
     if result.returncode != 0:
         return True, result.stdout.strip()
 
-    dirty_lines = [line for line in result.stdout.splitlines() if line.strip()]
+    dirty_lines = []
+
+    for line in result.stdout.splitlines():
+        if not line.strip():
+            continue
+
+        # Les fichiers non suivis (ex: Amber.bat ou anciens setup)
+        # ne doivent pas bloquer une mise à jour du code suivi.
+        if line.startswith("??"):
+            continue
+
+        dirty_lines.append(line)
 
     if dirty_lines:
         return True, "\n".join(dirty_lines[:20])
@@ -529,7 +540,7 @@ class UpdaterWindow(tk.Toplevel):
 
         self._button(
             row1,
-            "Publier Amber 0.0.4",
+            f"Publier Amber {CURRENT_VERSION}",
             self.publish
         ).pack(side="left", padx=8)
 
@@ -627,7 +638,9 @@ class UpdaterWindow(tk.Toplevel):
             )
             return
 
-        self.status_var.set("Publication de la base Amber 0.0.4...")
+        self.status_var.set(
+            f"Publication de la base Amber {CURRENT_VERSION}..."
+        )
         self.run_async(publish_baseline, self._published)
 
     def _published(self, result):
