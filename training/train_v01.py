@@ -45,6 +45,7 @@ STATUS_FILE = CHECKPOINT_DIR / "amber_v01_status.json"
 TEMP_CHECKPOINT = CHECKPOINT_DIR / "amber_v01_latest.tmp"
 STOP_FILE = ROOT / "training" / ".v01_stop_requested"
 PAUSE_FILE = ROOT / "training" / ".v01_pause_requested"
+AUTOTUNE_FILE = CHECKPOINT_DIR / "amber_v01_autotune.json"
 
 
 PROFILES = {
@@ -68,6 +69,88 @@ PROFILES = {
     },
 }
 
+
+
+def load_autotune_profile(
+    mode,
+    gpu_name,
+):
+    if mode != "full":
+        return None
+
+    if not AUTOTUNE_FILE.exists():
+        return None
+
+    try:
+        data = json.loads(
+            AUTOTUNE_FILE.read_text(
+                encoding="utf-8"
+            )
+        )
+    except Exception:
+        return None
+
+    if data.get("gpu") != gpu_name:
+        return None
+
+    best = data.get(
+        "best"
+    )
+
+    if not isinstance(
+        best,
+        dict
+    ):
+        return None
+
+    micro_batch = int(
+        best.get(
+            "micro_batch",
+            0
+        )
+    )
+
+    accumulation = int(
+        best.get(
+            "gradient_accumulation",
+            0
+        )
+    )
+
+    checkpointing = bool(
+        best.get(
+            "checkpointing",
+            True
+        )
+    )
+
+    if (
+        micro_batch <= 0
+        or accumulation <= 0
+        or micro_batch
+        * accumulation
+        * 1024
+        != 16_384
+    ):
+        return None
+
+    return {
+        "micro_batch": micro_batch,
+        "gradient_accumulation": accumulation,
+        "gradient_checkpointing": checkpointing,
+        "tokens_per_second": float(
+            best.get(
+                "tokens_per_second",
+                0.0
+            )
+        ),
+        "peak_reserved_bytes": int(
+            best.get(
+                "peak_reserved_bytes",
+                0
+            )
+        ),
+    }
 
 def clear_file(path):
     try:
@@ -201,7 +284,7 @@ def write_status(
     )
 
     payload = {
-        "version": "0.1.4",
+        "version": "0.1.5",
         "step": int(step),
         "tokens_seen": int(tokens_seen),
         "train_loss": (
@@ -274,7 +357,7 @@ def save_checkpoint(
         return
 
     payload = {
-        "amber_version": "0.1.4",
+        "amber_version": "0.1.5",
         "config": config.to_dict(),
         "step": int(step),
         "tokens_seen": int(tokens_seen),
@@ -714,9 +797,11 @@ def main():
             "L'objectif d'arrêt ne peut pas dépasser l'horizon LR."
         )
 
-    profile = PROFILES[
-        args.mode
-    ]
+    profile = dict(
+        PROFILES[
+            args.mode
+        ]
+    )
 
     device = find_amber_gpu()
 
@@ -724,13 +809,62 @@ def main():
         device
     )
 
+    gpu_name = torch.cuda.get_device_name(
+        device
+    )
+
+    tuned = load_autotune_profile(
+        args.mode,
+        gpu_name
+    )
+
+    if tuned:
+        profile["micro_batch"] = tuned[
+            "micro_batch"
+        ]
+
+        profile["gradient_accumulation"] = tuned[
+            "gradient_accumulation"
+        ]
+
+        profile["gradient_checkpointing"] = tuned[
+            "gradient_checkpointing"
+        ]
+
+        print(
+            (
+                "[V01 AUTOTUNE] Profil chargé : "
+                f"micro_batch={profile['micro_batch']} | "
+                f"grad_accum={profile['gradient_accumulation']} | "
+                f"checkpoint="
+                f"{'ON' if profile['gradient_checkpointing'] else 'OFF'} | "
+                f"benchmark={tuned['tokens_per_second']:,.0f} tok/s"
+            ),
+            flush=True
+        )
+
+    else:
+        profile["gradient_checkpointing"] = True
+
+        if args.mode == "full":
+            print(
+                (
+                    "[V01 AUTOTUNE] Aucun profil validé. "
+                    "FULL utilise le réglage sûr par défaut."
+                ),
+                flush=True
+            )
+
     print(
-        f"[V01] GPU sélectionné : {torch.cuda.get_device_name(device)}",
+        f"[V01] GPU sélectionné : {gpu_name}",
         flush=True
     )
 
     config = AmberV01Config(
-        vocab_size=vocab_size
+        vocab_size=vocab_size,
+        gradient_checkpointing=profile[
+            "gradient_checkpointing"
+        ],
     )
 
     print(
@@ -989,7 +1123,7 @@ def main():
     )
 
     print(
-        "AMBER 0.1.4 PRETRAINER",
+        "AMBER 0.1.5 PRETRAINER",
         flush=True
     )
 
@@ -1030,7 +1164,20 @@ def main():
     )
 
     print(
+        f"Micro batch  : {micro_batch}",
+        flush=True
+    )
+
+    print(
         f"Grad accum   : {accumulation}",
+        flush=True
+    )
+
+    print(
+        (
+            f"Grad ckpt    : "
+            f"{'ON' if config.gradient_checkpointing else 'OFF'}"
+        ),
         flush=True
     )
 
@@ -1407,6 +1554,13 @@ def main():
                 / 1024**3
             )
 
+            reserved_vram = (
+                torch.cuda.memory_reserved(
+                    device
+                )
+                / 1024**3
+            )
+
             val_text = (
                 f"{last_val_loss:.4f}"
                 if last_val_loss is not None
@@ -1423,6 +1577,7 @@ def main():
                     f"speed={tok_per_second:,.0f} tok/s | "
                     f"lr={lr:.2e} | "
                     f"vram={vram:.2f} GB | "
+                    f"reserved={reserved_vram:.2f} GB | "
                     f"eta={format_eta(eta)}"
                 ),
                 flush=True
