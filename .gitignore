@@ -13,6 +13,10 @@ data/*
 # Runtime control files
 training/.stop_requested
 training/.pause_requested
+training/.v01_stop_requested
+training/.v01_pause_requested
+training/.v02_stop_requested
+training/.v02_pause_requested
 
 # Updater backups
 backups/
