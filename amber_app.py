@@ -108,7 +108,7 @@ class AmberApp(tk.Tk):
         super().__init__()
 
         self.title(
-            "Amber 0.1.5"
+            "Amber 0.1.6"
         )
 
         self.geometry(
@@ -145,6 +145,10 @@ class AmberApp(tk.Tk):
 
         self.v01_schedule_tokens = tk.StringVar(
             value="100000000"
+        )
+
+        self.v01_full_vram_target = tk.StringVar(
+            value="15"
         )
 
         self.current_step = 0
@@ -344,7 +348,7 @@ class AmberApp(tk.Tk):
 
         ttk.Label(
             root,
-            text="AI Control Center · Amber Model 0.1.5",
+            text="AI Control Center · Amber Model 0.1.6",
             style="Subtitle.TLabel"
         ).pack(
             anchor="w",
@@ -538,7 +542,7 @@ class AmberApp(tk.Tk):
         )
 
         self.log(
-            "Amber Control Center 0.1.5 ready."
+            "Amber Control Center 0.1.6 ready."
         )
 
     def _timestamp(self):
@@ -2528,7 +2532,7 @@ class AmberApp(tk.Tk):
 
         ttk.Label(
             self.v01_tab,
-            text="Amber 0.1.5",
+            text="Amber 0.1.6",
             style="Title.TLabel"
         ).pack(
             anchor="w",
@@ -2673,6 +2677,29 @@ class AmberApp(tk.Tk):
             padx=(0, 10)
         )
 
+        ttk.Label(
+            mode_row,
+            text="Cible VRAM FULL :"
+        ).pack(
+            side="left",
+            padx=(10, 4)
+        )
+
+        ttk.Combobox(
+            mode_row,
+            textvariable=self.v01_full_vram_target,
+            values=[
+                "AUTO",
+                "10",
+                "15"
+            ],
+            state="readonly",
+            width=6
+        ).pack(
+            side="left",
+            padx=(0, 10)
+        )
+
         for mode in (
             "ECO",
             "BALANCED",
@@ -2787,6 +2814,16 @@ class AmberApp(tk.Tk):
             pady=(1, 0)
         )
 
+        self.v01_vram_target_text = ttk.Label(
+            self.v01_tab,
+            text="FULL : cible VRAM 15 GB"
+        )
+
+        self.v01_vram_target_text.pack(
+            anchor="w",
+            pady=(1, 0)
+        )
+
         self.v01_metrics = ttk.Label(
             self.v01_tab,
             text="Vitesse : - | VRAM : - | ETA : -"
@@ -2879,6 +2916,19 @@ class AmberApp(tk.Tk):
         cache = load_v01_cache_metadata()
         status = self._read_v01_status_file()
         autotune = self._read_v01_autotune_file()
+
+        full_vram_target = self.v01_full_vram_target.get().strip()
+
+        self.v01_vram_target_text.config(
+            text=(
+                "FULL : "
+                + (
+                    "priorité vitesse Auto-Tuner"
+                    if full_vram_target.upper() == "AUTO"
+                    else f"cible VRAM {full_vram_target} GB"
+                )
+            )
+        )
 
         if autotune.get("best"):
             best = autotune["best"]
@@ -3315,6 +3365,33 @@ class AmberApp(tk.Tk):
             "--schedule-tokens",
             str(schedule)
         ]
+
+        if self.v01_mode.get().upper() == "FULL":
+            full_vram_target = (
+                self.v01_full_vram_target.get().strip()
+            )
+
+            if full_vram_target.upper() != "AUTO":
+                try:
+                    target_gb = float(
+                        full_vram_target
+                    )
+                except ValueError:
+                    target_gb = 15.0
+
+                command.extend(
+                    [
+                        "--full-vram-target",
+                        str(target_gb)
+                    ]
+                )
+
+                self._v01_log(
+                    (
+                        "[V01] FULL cible VRAM : "
+                        f"{target_gb:.1f} GB."
+                    )
+                )
 
         if fresh or existing_tokens <= 0:
             command.append(
@@ -3892,6 +3969,7 @@ class AmberApp(tk.Tk):
                     r"speed=([0-9,]+)\s+tok/s\s+\|\s+"
                     r"lr=([^\s]+)\s+\|\s+"
                     r"vram=([0-9.]+)\s+GB\s+\|\s+"
+                    r"(?:peak=([0-9.]+)\s+GB\s+\|\s+)?"
                     r"(?:reserved=([0-9.]+)\s+GB\s+\|\s+)?"
                     r"eta=([^\s]+)"
                 ),
@@ -3934,7 +4012,7 @@ class AmberApp(tk.Tk):
                     v01_match.group(8)
                 )
 
-                reserved_vram = (
+                peak_vram = (
                     float(
                         v01_match.group(9)
                     )
@@ -3942,7 +4020,15 @@ class AmberApp(tk.Tk):
                     else vram
                 )
 
-                eta = v01_match.group(10)
+                reserved_vram = (
+                    float(
+                        v01_match.group(10)
+                    )
+                    if v01_match.group(10)
+                    else peak_vram
+                )
+
+                eta = v01_match.group(11)
 
                 self.v01_seen_value.config(
                     text=format_tokens(
@@ -3979,7 +4065,8 @@ class AmberApp(tk.Tk):
                     text=(
                         f"Step : {step:,} | "
                         f"Vitesse : {speed:,} tok/s | "
-                        f"VRAM : {vram:.2f} GB allouée / "
+                        f"VRAM : {vram:.2f} GB instant. / "
+                        f"{peak_vram:.2f} GB pic / "
                         f"{reserved_vram:.2f} GB réservée | "
                         f"ETA : {eta}"
                     )
