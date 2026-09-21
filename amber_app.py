@@ -103,7 +103,7 @@ class AmberApp(tk.Tk):
         super().__init__()
 
         self.title(
-            "Amber 0.1.3"
+            "Amber 0.1.4"
         )
 
         self.geometry(
@@ -135,6 +135,10 @@ class AmberApp(tk.Tk):
         )
 
         self.v01_target_tokens = tk.StringVar(
+            value="100000000"
+        )
+
+        self.v01_schedule_tokens = tk.StringVar(
             value="100000000"
         )
 
@@ -335,7 +339,7 @@ class AmberApp(tk.Tk):
 
         ttk.Label(
             root,
-            text="AI Control Center · Amber Model 0.1.3",
+            text="AI Control Center · Amber Model 0.1.4",
             style="Subtitle.TLabel"
         ).pack(
             anchor="w",
@@ -529,7 +533,7 @@ class AmberApp(tk.Tk):
         )
 
         self.log(
-            "Amber Control Center 0.1.3 ready."
+            "Amber Control Center 0.1.4 ready."
         )
 
     def _timestamp(self):
@@ -2519,7 +2523,7 @@ class AmberApp(tk.Tk):
 
         ttk.Label(
             self.v01_tab,
-            text="Amber 0.1.3",
+            text="Amber 0.1.4",
             style="Title.TLabel"
         ).pack(
             anchor="w",
@@ -2606,7 +2610,7 @@ class AmberApp(tk.Tk):
 
         ttk.Label(
             controls,
-            text="Cible tokens :"
+            text="Objectif arrêt :"
         ).pack(
             side="left",
             padx=(18, 4)
@@ -2615,7 +2619,24 @@ class AmberApp(tk.Tk):
         ttk.Entry(
             controls,
             textvariable=self.v01_target_tokens,
-            width=14
+            width=13
+        ).pack(
+            side="left",
+            padx=(0, 8)
+        )
+
+        ttk.Label(
+            controls,
+            text="Horizon LR :"
+        ).pack(
+            side="left",
+            padx=(8, 4)
+        )
+
+        ttk.Entry(
+            controls,
+            textvariable=self.v01_schedule_tokens,
+            width=13
         ).pack(
             side="left",
             padx=(0, 8)
@@ -2655,11 +2676,22 @@ class AmberApp(tk.Tk):
 
         ttk.Button(
             mode_row,
-            text="Démarrer pré-entraînement",
+            text="Démarrer / Reprendre",
             command=self.start_v01_training
         ).pack(
             side="left",
             padx=(15, 7)
+        )
+
+        ttk.Button(
+            mode_row,
+            text="Nouveau run",
+            command=lambda: self.start_v01_training(
+                fresh=True
+            )
+        ).pack(
+            side="left",
+            padx=7
         )
 
         self.v01_pause_button = ttk.Button(
@@ -2719,6 +2751,16 @@ class AmberApp(tk.Tk):
 
         self.v01_progress_text.pack(
             anchor="w"
+        )
+
+        self.v01_schedule_text = ttk.Label(
+            self.v01_tab,
+            text="Horizon LR : 100.0 M tokens"
+        )
+
+        self.v01_schedule_text.pack(
+            anchor="w",
+            pady=(1, 0)
         )
 
         self.v01_metrics = ttk.Label(
@@ -2878,6 +2920,30 @@ class AmberApp(tk.Tk):
         except Exception:
             target = 100_000_000
 
+        try:
+            requested_schedule = int(
+                self.v01_schedule_tokens.get()
+            )
+        except Exception:
+            requested_schedule = 100_000_000
+
+        saved_schedule = status.get(
+            "schedule_tokens"
+        )
+
+        schedule_display = (
+            int(saved_schedule)
+            if saved_schedule
+            else requested_schedule
+        )
+
+        self.v01_schedule_text.config(
+            text=(
+                "Horizon LR : "
+                f"{format_tokens(schedule_display)} tokens"
+            )
+        )
+
         self.v01_progress.configure(
             maximum=max(
                 target,
@@ -2984,7 +3050,10 @@ class AmberApp(tk.Tk):
             ]
         )
 
-    def start_v01_training(self):
+    def start_v01_training(
+        self,
+        fresh=False
+    ):
 
         if (
             self.process is not None
@@ -3009,14 +3078,92 @@ class AmberApp(tk.Tk):
             target = int(
                 self.v01_target_tokens.get()
             )
+
+            schedule = int(
+                self.v01_schedule_tokens.get()
+            )
+
         except ValueError:
             messagebox.showerror(
                 "Amber 0.1",
-                "La cible tokens doit être un entier."
+                "Objectif arrêt et Horizon LR doivent être des entiers."
             )
             return
 
-        if target <= 0:
+        if target <= 0 or schedule <= 0:
+            messagebox.showerror(
+                "Amber 0.1",
+                "Les valeurs doivent être supérieures à zéro."
+            )
+            return
+
+        if target > schedule:
+            messagebox.showerror(
+                "Amber 0.1",
+                (
+                    "L'objectif d'arrêt ne peut pas dépasser "
+                    "l'Horizon LR."
+                )
+            )
+            return
+
+        status = self._read_v01_status_file()
+        existing_tokens = int(
+            status.get(
+                "tokens_seen",
+                0
+            )
+        )
+
+        existing_schedule = status.get(
+            "schedule_tokens"
+        )
+
+        if fresh and existing_tokens > 0:
+            if not messagebox.askyesno(
+                "Nouveau run Amber 0.1",
+                (
+                    f"Archiver le checkpoint actuel "
+                    f"({format_tokens(existing_tokens)} tokens) "
+                    "et redémarrer depuis zéro ?\n\n"
+                    "Le checkpoint benchmark sera conservé dans "
+                    "le dossier checkpoints."
+                )
+            ):
+                return
+
+        if (
+            not fresh
+            and existing_tokens > 0
+            and existing_schedule is None
+        ):
+            messagebox.showwarning(
+                "Amber 0.1",
+                (
+                    "Le checkpoint actuel provient du benchmark 0.1.3 "
+                    "et n'a pas d'Horizon LR fixe.\n\n"
+                    "Utilise 'Nouveau run' pour l'archiver et lancer "
+                    "le vrai entraînement avec un scheduler propre."
+                )
+            )
+            return
+
+        if (
+            not fresh
+            and existing_tokens > 0
+            and existing_schedule is not None
+            and int(existing_schedule) != schedule
+        ):
+            messagebox.showwarning(
+                "Amber 0.1",
+                (
+                    "L'Horizon LR ne correspond pas au checkpoint.\n\n"
+                    f"Checkpoint : {format_tokens(int(existing_schedule))}\n"
+                    f"Demandé : {format_tokens(schedule)}\n\n"
+                    "Garde le même horizon pour reprendre, ou utilise "
+                    "'Nouveau run'."
+                )
+            )
             return
 
         for control_file in (
@@ -3039,6 +3186,13 @@ class AmberApp(tk.Tk):
             text="Pré-entraînement en cours..."
         )
 
+        self.v01_schedule_text.config(
+            text=(
+                "Horizon LR : "
+                f"{format_tokens(schedule)} tokens"
+            )
+        )
+
         command = [
             sys.executable,
             "-m",
@@ -3046,23 +3200,37 @@ class AmberApp(tk.Tk):
             "--mode",
             self.v01_mode.get().lower(),
             "--target-tokens",
-            str(target)
+            str(target),
+            "--schedule-tokens",
+            str(schedule)
         ]
 
-        status = self._read_v01_status_file()
-
-        if int(
-            status.get(
-                "tokens_seen",
-                0
-            )
-        ) <= 0:
+        if fresh or existing_tokens <= 0:
             command.append(
                 "--fresh"
             )
 
+            if fresh:
+                self._v01_log(
+                    (
+                        "[V01] Nouveau run demandé : "
+                        f"objectif={format_tokens(target)}, "
+                        f"horizon LR={format_tokens(schedule)}."
+                    )
+                )
+
+            else:
+                self._v01_log(
+                    "[V01] Aucun apprentissage validé : démarrage propre demandé."
+                )
+
+        else:
             self._v01_log(
-                "[V01] Aucun apprentissage validé : démarrage propre demandé."
+                (
+                    "[V01] Reprise du checkpoint : "
+                    f"{format_tokens(existing_tokens)} tokens, "
+                    f"horizon LR={format_tokens(schedule)}."
+                )
             )
 
         self._run_command(
@@ -3897,7 +4065,7 @@ class AmberApp(tk.Tk):
                 self.refresh_v01_status()
 
             if (
-                "AMBER 0.1 PRETRAINING TARGET REACHED"
+                "AMBER 0.1 PRETRAINING STOP TARGET REACHED"
                 in line
             ):
                 self.v01_status_label.config(
