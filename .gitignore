@@ -22,3 +22,9 @@ updater_local.json
 
 # Old local backups
 *.bak_*
+
+
+# Local launchers / one-shot setup files
+Amber.bat
+Amber_0.0.*_Setup.py
+*.lnk
