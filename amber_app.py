@@ -1,4 +1,4 @@
-﻿import os
+import os
 import queue
 import re
 import subprocess
@@ -13,11 +13,13 @@ from tkinter.scrolledtext import ScrolledText
 import torch
 
 from amber.model import AmberConfig, AmberModel
+from amber.dataset_manager import dataset_stats, write_manifest
 from amber.updater import open_updater_window
 from inference.chat import generate_reply
 
 
 ROOT = Path(__file__).resolve().parent
+DATA_DIR = ROOT / "data"
 
 CHECKPOINTS = (
     ROOT
@@ -48,7 +50,7 @@ class AmberApp(tk.Tk):
         super().__init__()
 
         self.title(
-            "Amber 0.0.4"
+            "Amber 0.0.5"
         )
 
         self.geometry(
@@ -77,6 +79,10 @@ class AmberApp(tk.Tk):
 
         self.current_step = 0
         self.current_loss = None
+        self.current_speed = 0.0
+        self.current_eta = "--:--"
+        self.current_train_vram = 0.0
+        self.current_governor = "BALANCED"
 
         self.paused = False
 
@@ -265,7 +271,7 @@ class AmberApp(tk.Tk):
 
         ttk.Label(
             root,
-            text="AI Control Center · Amber Model 0.0.4",
+            text="AI Control Center · Amber Model 0.0.5",
             style="Subtitle.TLabel"
         ).pack(
             anchor="w",
@@ -297,6 +303,10 @@ class AmberApp(tk.Tk):
             self.notebook
         )
 
+        self.dataset_tab = ttk.Frame(
+            self.notebook
+        )
+
         self.notebook.add(
             self.dashboard_tab,
             text="Dashboard"
@@ -317,10 +327,16 @@ class AmberApp(tk.Tk):
             text="Checkpoints"
         )
 
+        self.notebook.add(
+            self.dataset_tab,
+            text="Dataset"
+        )
+
         self._build_dashboard()
         self._build_chat()
         self._build_training()
         self._build_checkpoints()
+        self._build_dataset()
 
     # ========================================================
     # DASHBOARD
@@ -439,7 +455,7 @@ class AmberApp(tk.Tk):
         )
 
         self.log(
-            "Amber Control Center 0.0.3 ready."
+            "Amber Control Center 0.0.5 ready."
         )
 
     def _card(
@@ -544,6 +560,14 @@ class AmberApp(tk.Tk):
 
         self.chat_input.pack(
             fill="x"
+        )
+
+        self.chat_input.bind(
+            "<Control-Return>",
+            lambda event: (
+                self.send_chat(),
+                "break"
+            )[1]
         )
 
         actions = ttk.Frame(
@@ -747,29 +771,88 @@ class AmberApp(tk.Tk):
 
     def _build_training(self):
 
-        top = ttk.Frame(
+        header = ttk.Frame(
             self.training_tab
         )
 
-        top.pack(
+        header.pack(
             fill="x",
-            pady=20
+            pady=(20, 10)
         )
 
         ttk.Label(
-            top,
-            text="Training Governor"
+            header,
+            text="Amber Training",
+            style="Title.TLabel"
         ).pack(
             anchor="w"
         )
 
-        modes = ttk.Frame(
-            top
+        ttk.Label(
+            header,
+            text=(
+                "Suivi en direct du modèle, Governor et progression."
+            ),
+            style="Subtitle.TLabel"
+        ).pack(
+            anchor="w",
+            pady=(2, 10)
         )
 
-        modes.pack(
-            anchor="w",
-            pady=10
+        metrics = ttk.Frame(
+            self.training_tab
+        )
+
+        metrics.pack(
+            fill="x",
+            pady=(0, 15)
+        )
+
+        self.train_step_value = self._card(
+            metrics,
+            "STEP"
+        )
+
+        self.train_loss_value = self._card(
+            metrics,
+            "LOSS"
+        )
+
+        self.train_speed_value = self._card(
+            metrics,
+            "VITESSE"
+        )
+
+        self.train_eta_value = self._card(
+            metrics,
+            "ETA"
+        )
+
+        self.train_vram_value = self._card(
+            metrics,
+            "VRAM TRAIN"
+        )
+
+        self.train_governor_value = self._card(
+            metrics,
+            "GOVERNOR"
+        )
+
+        governor_box = ttk.Frame(
+            self.training_tab
+        )
+
+        governor_box.pack(
+            fill="x",
+            pady=5
+        )
+
+        ttk.Label(
+            governor_box,
+            text="Training Governor"
+        ).pack(
+            side="left",
+            padx=(0, 20)
         )
 
         for mode in [
@@ -778,10 +861,13 @@ class AmberApp(tk.Tk):
             "FULL"
         ]:
             ttk.Radiobutton(
-                modes,
+                governor_box,
                 text=mode,
                 variable=self.mode,
-                value=mode
+                value=mode,
+                command=lambda: self.train_governor_value.config(
+                    text=self.mode.get()
+                )
             ).pack(
                 side="left",
                 padx=(0, 20)
@@ -792,7 +878,7 @@ class AmberApp(tk.Tk):
         )
 
         objective.pack(
-            anchor="w",
+            fill="x",
             pady=10
         )
 
@@ -813,13 +899,13 @@ class AmberApp(tk.Tk):
         )
 
         self.training_status = ttk.Label(
-            self.training_tab,
+            objective,
             text="Prêt"
         )
 
         self.training_status.pack(
-            anchor="w",
-            pady=(10, 5)
+            side="left",
+            padx=20
         )
 
         self.progress = ttk.Progressbar(
@@ -830,16 +916,33 @@ class AmberApp(tk.Tk):
 
         self.progress.pack(
             fill="x",
-            pady=5
+            pady=(10, 5)
+        )
+
+        progress_row = ttk.Frame(
+            self.training_tab
+        )
+
+        progress_row.pack(
+            fill="x"
         )
 
         self.progress_text = ttk.Label(
-            self.training_tab,
+            progress_row,
             text="0 / 500"
         )
 
         self.progress_text.pack(
-            anchor="w"
+            side="left"
+        )
+
+        self.progress_percent = ttk.Label(
+            progress_row,
+            text="0.0 %"
+        )
+
+        self.progress_percent.pack(
+            side="right"
         )
 
         buttons = ttk.Frame(
@@ -889,6 +992,30 @@ class AmberApp(tk.Tk):
         ).pack(
             side="left",
             padx=8
+        )
+
+        self.train_step_value.config(
+            text=str(self.current_step)
+        )
+
+        self.train_loss_value.config(
+            text="-"
+        )
+
+        self.train_speed_value.config(
+            text="0.00 step/s"
+        )
+
+        self.train_eta_value.config(
+            text="--:--"
+        )
+
+        self.train_vram_value.config(
+            text="0.00 GB"
+        )
+
+        self.train_governor_value.config(
+            text=self.mode.get()
         )
 
     def start_training(self):
@@ -958,7 +1085,7 @@ class AmberApp(tk.Tk):
         )
 
         self.notebook.select(
-            self.dashboard_tab
+            self.training_tab
         )
 
         self.log("")
@@ -1057,6 +1184,205 @@ class AmberApp(tk.Tk):
 
             self.log(
                 f"Stop error: {exc}"
+            )
+
+    # ========================================================
+    # DATASET MANAGER
+    # ========================================================
+
+    def _build_dataset(self):
+
+        ttk.Label(
+            self.dataset_tab,
+            text="Dataset Manager",
+            style="Title.TLabel"
+        ).pack(
+            anchor="w",
+            pady=(20, 5)
+        )
+
+        ttk.Label(
+            self.dataset_tab,
+            text=(
+                "Base de préparation pour Amber 0.1. "
+                "Cette version analyse le corpus local sans le modifier."
+            ),
+            style="Subtitle.TLabel"
+        ).pack(
+            anchor="w",
+            pady=(0, 15)
+        )
+
+        cards = ttk.Frame(
+            self.dataset_tab
+        )
+
+        cards.pack(
+            fill="x",
+            pady=(0, 15)
+        )
+
+        self.dataset_size_value = self._card(
+            cards,
+            "TAILLE"
+        )
+
+        self.dataset_chars_value = self._card(
+            cards,
+            "CARACTÈRES"
+        )
+
+        self.dataset_lines_value = self._card(
+            cards,
+            "LIGNES"
+        )
+
+        self.dataset_words_value = self._card(
+            cards,
+            "MOTS"
+        )
+
+        self.dataset_tokens_value = self._card(
+            cards,
+            "TOKENS BYTE"
+        )
+
+        controls = ttk.Frame(
+            self.dataset_tab
+        )
+
+        controls.pack(
+            anchor="w",
+            pady=10
+        )
+
+        ttk.Button(
+            controls,
+            text="Analyser train.txt",
+            command=self.refresh_dataset
+        ).pack(
+            side="left",
+            padx=(0, 8)
+        )
+
+        ttk.Button(
+            controls,
+            text="Créer le manifest",
+            command=self.create_dataset_manifest
+        ).pack(
+            side="left",
+            padx=8
+        )
+
+        ttk.Button(
+            controls,
+            text="Ouvrir le dossier data",
+            command=lambda: os.startfile(
+                DATA_DIR
+            )
+        ).pack(
+            side="left",
+            padx=8
+        )
+
+        self.dataset_status = ScrolledText(
+            self.dataset_tab,
+            bg="#0b0b0f",
+            fg="#e5e5ea",
+            insertbackground="white",
+            relief="flat",
+            font=("Consolas", 10),
+            height=16
+        )
+
+        self.dataset_status.pack(
+            fill="both",
+            expand=True,
+            pady=(10, 0)
+        )
+
+        self.refresh_dataset()
+
+    def refresh_dataset(self):
+
+        stats = dataset_stats()
+
+        if not stats["exists"]:
+            self.dataset_size_value.config(text="-")
+            self.dataset_chars_value.config(text="0")
+            self.dataset_lines_value.config(text="0")
+            self.dataset_words_value.config(text="0")
+            self.dataset_tokens_value.config(text="0")
+
+            self.dataset_status.delete("1.0", "end")
+            self.dataset_status.insert(
+                "end",
+                "data/train.txt introuvable.\n"
+            )
+            return
+
+        self.dataset_size_value.config(
+            text=stats["size_human"]
+        )
+
+        self.dataset_chars_value.config(
+            text=f'{stats["characters"]:,}'
+        )
+
+        self.dataset_lines_value.config(
+            text=f'{stats["lines"]:,}'
+        )
+
+        self.dataset_words_value.config(
+            text=f'{stats["words"]:,}'
+        )
+
+        self.dataset_tokens_value.config(
+            text=f'{stats["utf8_bytes"]:,}'
+        )
+
+        self.dataset_status.delete(
+            "1.0",
+            "end"
+        )
+
+        self.dataset_status.insert(
+            "end",
+            (
+                f'Fichier       : {stats["path"]}\n'
+                f'Taille        : {stats["size_human"]}\n'
+                f'Caractères    : {stats["characters"]:,}\n'
+                f'Octets UTF-8  : {stats["utf8_bytes"]:,}\n'
+                f'Lignes        : {stats["lines"]:,}\n'
+                f'Mots          : {stats["words"]:,}\n'
+                f'SHA-256       : {stats["sha256"]}\n'
+                f'Modifié       : {stats["modified"]}\n\n'
+                "Tokenizer actuel : AmberByteTokenizer\n"
+                "Amber Seed reste un prototype de validation.\n"
+                "Prochaine cible : tokenizer entraîné + corpus multi-source pour Amber 0.1.\n"
+            )
+        )
+
+    def create_dataset_manifest(self):
+
+        try:
+            manifest = write_manifest()
+
+            self.refresh_dataset()
+
+            self.dataset_status.insert(
+                "end",
+                (
+                    "\nManifest créé : "
+                    "data/dataset_manifest.json\n"
+                    f'Statut : {manifest["status"]}\n'
+                )
+            )
+
+        except Exception as exc:
+            messagebox.showerror(
+                "Amber Dataset Manager",
+                str(exc)
             )
 
     # ========================================================
@@ -1297,6 +1623,35 @@ class AmberApp(tk.Tk):
                 text=f"{float(self.current_loss):.4f}"
             )
 
+        self.train_step_value.config(
+            text=str(self.current_step)
+        )
+
+        if self.current_loss is None:
+            self.train_loss_value.config(
+                text="-"
+            )
+        else:
+            self.train_loss_value.config(
+                text=f"{float(self.current_loss):.4f}"
+            )
+
+        self.train_speed_value.config(
+            text=f"{self.current_speed:.2f} step/s"
+        )
+
+        self.train_eta_value.config(
+            text=self.current_eta
+        )
+
+        self.train_vram_value.config(
+            text=f"{self.current_train_vram:.2f} GB"
+        )
+
+        self.train_governor_value.config(
+            text=self.current_governor
+        )
+
         try:
             target = int(
                 self.target_step.get()
@@ -1318,6 +1673,16 @@ class AmberApp(tk.Tk):
                     f"{self.current_step} / "
                     f"{target}"
                 )
+            )
+
+            percent = (
+                (self.current_step / target) * 100
+                if target > 0
+                else 0.0
+            )
+
+            self.progress_percent.config(
+                text=f"{percent:.1f} %"
             )
 
         except Exception:
@@ -1427,7 +1792,13 @@ class AmberApp(tk.Tk):
             )
 
             match = re.search(
-                r"\[(\d{6})\]\s+loss=([0-9.]+)",
+                (
+                    r"\[(\d{6})\]\s+"
+                    r"loss=([0-9.]+)\s+\|\s+"
+                    r"speed=([0-9.]+)\s+step/s"
+                    r"(?:\s+\|\s+vram=([0-9.]+)\s+GB)?"
+                    r"(?:\s+\|\s+eta=([^\s]+))?"
+                ),
                 line
             )
 
@@ -1441,8 +1812,28 @@ class AmberApp(tk.Tk):
                     match.group(2)
                 )
 
+                speed = float(
+                    match.group(3)
+                )
+
+                vram = (
+                    float(match.group(4))
+                    if match.group(4)
+                    else self.current_train_vram
+                )
+
+                eta = (
+                    match.group(5)
+                    if match.group(5)
+                    else self.current_eta
+                )
+
                 self.current_step = step
                 self.current_loss = loss
+                self.current_speed = speed
+                self.current_train_vram = vram
+                self.current_eta = eta
+                self.current_governor = self.mode.get()
 
                 self.step_value.config(
                     text=str(
@@ -1452,6 +1843,30 @@ class AmberApp(tk.Tk):
 
                 self.loss_value.config(
                     text=f"{loss:.4f}"
+                )
+
+                self.train_step_value.config(
+                    text=str(step)
+                )
+
+                self.train_loss_value.config(
+                    text=f"{loss:.4f}"
+                )
+
+                self.train_speed_value.config(
+                    text=f"{speed:.2f} step/s"
+                )
+
+                self.train_vram_value.config(
+                    text=f"{vram:.2f} GB"
+                )
+
+                self.train_eta_value.config(
+                    text=eta
+                )
+
+                self.train_governor_value.config(
+                    text=self.current_governor
                 )
 
                 try:
@@ -1472,6 +1887,16 @@ class AmberApp(tk.Tk):
                         text=f"{step} / {target}"
                     )
 
+                    percent = (
+                        (step / target) * 100
+                        if target > 0
+                        else 0.0
+                    )
+
+                    self.progress_percent.config(
+                        text=f"{percent:.1f} %"
+                    )
+
                 except Exception:
                     pass
 
@@ -1481,6 +1906,12 @@ class AmberApp(tk.Tk):
             ):
                 self.refresh_checkpoints()
 
+            if "Game detected:" in line:
+                self.current_governor = "GAME PAUSE"
+                self.train_governor_value.config(
+                    text="GAME PAUSE"
+                )
+
             if (
                 "Training paused"
                 in line
@@ -1489,12 +1920,28 @@ class AmberApp(tk.Tk):
                     text="En pause"
                 )
 
+                self.current_governor = (
+                    "GAME PAUSE"
+                    if "[Governor]" in line
+                    else "PAUSE"
+                )
+
+                self.train_governor_value.config(
+                    text=self.current_governor
+                )
+
             if (
                 "Training resumed"
                 in line
             ):
                 self.training_status.config(
                     text="Entraînement en cours..."
+                )
+
+                self.current_governor = self.mode.get()
+
+                self.train_governor_value.config(
+                    text=self.current_governor
                 )
 
             if (
