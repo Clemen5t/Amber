@@ -193,6 +193,7 @@ def write_status(
     val_loss,
     profile,
     target_tokens=None,
+    schedule_tokens=None,
 ):
     CHECKPOINT_DIR.mkdir(
         parents=True,
@@ -200,7 +201,7 @@ def write_status(
     )
 
     payload = {
-        "version": "0.1.3",
+        "version": "0.1.4",
         "step": int(step),
         "tokens_seen": int(tokens_seen),
         "train_loss": (
@@ -217,6 +218,11 @@ def write_status(
         "target_tokens": (
             int(target_tokens)
             if target_tokens is not None
+            else None
+        ),
+        "schedule_tokens": (
+            int(schedule_tokens)
+            if schedule_tokens is not None
             else None
         ),
     }
@@ -242,6 +248,8 @@ def save_checkpoint(
     train_loss,
     val_loss,
     profile,
+    target_tokens,
+    schedule_tokens,
 ):
     CHECKPOINT_DIR.mkdir(
         parents=True,
@@ -255,6 +263,8 @@ def save_checkpoint(
             train_loss=None,
             val_loss=None,
             profile=profile,
+            target_tokens=target_tokens,
+            schedule_tokens=schedule_tokens,
         )
 
         print(
@@ -264,7 +274,7 @@ def save_checkpoint(
         return
 
     payload = {
-        "amber_version": "0.1.3",
+        "amber_version": "0.1.4",
         "config": config.to_dict(),
         "step": int(step),
         "tokens_seen": int(tokens_seen),
@@ -279,6 +289,8 @@ def save_checkpoint(
             else None
         ),
         "profile": profile,
+        "target_tokens": int(target_tokens),
+        "schedule_tokens": int(schedule_tokens),
         "model_state": model.state_dict(),
         "optimizer_state": optimizer.state_dict(),
         "scaler_state": scaler.state_dict(),
@@ -299,6 +311,8 @@ def save_checkpoint(
         train_loss=train_loss,
         val_loss=val_loss,
         profile=profile,
+        target_tokens=target_tokens,
+        schedule_tokens=schedule_tokens,
     )
 
     print(
@@ -329,6 +343,8 @@ def load_checkpoint(
             "tokens_seen": 0,
             "train_loss": None,
             "val_loss": None,
+            "target_tokens": None,
+            "schedule_tokens": None,
         }
 
     # Le sidecar JSON est minuscule : on le lit avant le gros fichier .pt.
@@ -390,6 +406,8 @@ def load_checkpoint(
             "tokens_seen": 0,
             "train_loss": None,
             "val_loss": None,
+            "target_tokens": None,
+            "schedule_tokens": None,
         }
 
     size_mb = (
@@ -520,6 +538,12 @@ def load_checkpoint(
         "val_loss": payload.get(
             "val_loss"
         ),
+        "target_tokens": payload.get(
+            "target_tokens"
+        ),
+        "schedule_tokens": payload.get(
+            "schedule_tokens"
+        ),
     }
 
 
@@ -633,7 +657,15 @@ def main():
     parser.add_argument(
         "--target-tokens",
         type=int,
-        default=100_000_000
+        default=100_000_000,
+        help="Objectif d'arrêt cumulatif en tokens."
+    )
+
+    parser.add_argument(
+        "--schedule-tokens",
+        type=int,
+        default=100_000_000,
+        help="Horizon fixe de la courbe de learning rate."
     )
 
     parser.add_argument(
@@ -663,9 +695,23 @@ def main():
         args.target_tokens
     )
 
+    schedule_tokens = int(
+        args.schedule_tokens
+    )
+
     if target_tokens <= 0:
         raise ValueError(
             "target-tokens doit être > 0."
+        )
+
+    if schedule_tokens <= 0:
+        raise ValueError(
+            "schedule-tokens doit être > 0."
+        )
+
+    if target_tokens > schedule_tokens:
+        raise ValueError(
+            "L'objectif d'arrêt ne peut pas dépasser l'horizon LR."
         )
 
     profile = PROFILES[
@@ -741,8 +787,34 @@ def main():
     )
 
     if args.fresh and CHECKPOINT.exists():
+        previous_status = {}
+
+        if STATUS_FILE.exists():
+            try:
+                previous_status = json.loads(
+                    STATUS_FILE.read_text(
+                        encoding="utf-8"
+                    )
+                )
+            except Exception:
+                previous_status = {}
+
+        previous_tokens = int(
+            previous_status.get(
+                "tokens_seen",
+                0
+            )
+        )
+
+        archive_kind = (
+            "benchmark"
+            if previous_tokens > 0
+            else "abandoned"
+        )
+
         archive_name = (
-            "amber_v01_abandoned_"
+            f"amber_v01_{archive_kind}_"
+            f"{previous_tokens}_tokens_"
             + time.strftime("%Y%m%d_%H%M%S")
             + ".pt"
         )
@@ -759,8 +831,8 @@ def main():
 
             print(
                 (
-                    "[V01] Ancien checkpoint sans progression "
-                    f"archivé : {archive_name}"
+                    "[V01] Checkpoint précédent archivé : "
+                    f"{archive_name}"
                 ),
                 flush=True
             )
@@ -771,11 +843,33 @@ def main():
                 + str(exc)
             )
 
-        try:
-            if STATUS_FILE.exists():
-                STATUS_FILE.unlink()
-        except Exception:
-            pass
+        if STATUS_FILE.exists():
+            try:
+                status_archive = archive_path.with_suffix(
+                    ".json"
+                )
+
+                STATUS_FILE.replace(
+                    status_archive
+                )
+
+                print(
+                    (
+                        "[V01] Métadonnées du run précédent archivées : "
+                        f"{status_archive.name}"
+                    ),
+                    flush=True
+                )
+
+            except Exception as exc:
+                print(
+                    (
+                        "[V01] Avertissement : métadonnées non archivées : "
+                        f"{exc}"
+                    ),
+                    flush=True
+                )
+
 
     state = load_checkpoint(
         model=model,
@@ -799,6 +893,33 @@ def main():
     last_val_loss = state[
         "val_loss"
     ]
+
+    checkpoint_schedule = state.get(
+        "schedule_tokens"
+    )
+
+    if (
+        tokens_seen > 0
+        and checkpoint_schedule is None
+        and not args.fresh
+    ):
+        raise RuntimeError(
+            "Ce checkpoint vient d'Amber <= 0.1.3 et ne contient pas "
+            "d'horizon LR fixe. Utilise 'Nouveau run' pour l'archiver "
+            "et démarrer proprement."
+        )
+
+    if (
+        tokens_seen > 0
+        and checkpoint_schedule is not None
+        and int(checkpoint_schedule) != schedule_tokens
+    ):
+        raise RuntimeError(
+            "Horizon LR incompatible avec le checkpoint : "
+            f"{int(checkpoint_schedule):,} tokens dans le checkpoint, "
+            f"{schedule_tokens:,} demandés. Garde le même horizon ou "
+            "démarre un Nouveau run."
+        )
 
     if tokens_seen >= target_tokens:
         print(
@@ -868,7 +989,7 @@ def main():
     )
 
     print(
-        "AMBER 0.1.3 PRETRAINER",
+        "AMBER 0.1.4 PRETRAINER",
         flush=True
     )
 
@@ -924,7 +1045,12 @@ def main():
     )
 
     print(
-        f"Target       : {target_tokens:,} tokens",
+        f"Stop target  : {target_tokens:,} tokens",
+        flush=True
+    )
+
+    print(
+        f"LR horizon   : {schedule_tokens:,} tokens",
         flush=True
     )
 
@@ -959,6 +1085,8 @@ def main():
                 train_loss=last_train_loss,
                 val_loss=last_val_loss,
                 profile=args.mode,
+                target_tokens=target_tokens,
+                schedule_tokens=schedule_tokens,
             )
 
             print(
@@ -978,6 +1106,8 @@ def main():
                 train_loss=last_train_loss,
                 val_loss=last_val_loss,
                 profile=args.mode,
+                target_tokens=target_tokens,
+                schedule_tokens=schedule_tokens,
             )
 
             print(
@@ -1035,6 +1165,8 @@ def main():
                 train_loss=last_train_loss,
                 val_loss=last_val_loss,
                 profile=args.mode,
+                target_tokens=target_tokens,
+                schedule_tokens=schedule_tokens,
             )
 
             print(
@@ -1082,10 +1214,10 @@ def main():
 
         lr = learning_rate(
             tokens_seen=min(
-                target_tokens,
+                schedule_tokens,
                 tokens_seen + effective_tokens
             ),
-            target_tokens=target_tokens,
+            target_tokens=schedule_tokens,
             peak_lr=profile[
                 "learning_rate"
             ],
@@ -1298,7 +1430,7 @@ def main():
 
         if (
             step % 250 == 0
-            or tokens_seen >= target_tokens
+            and tokens_seen < target_tokens
         ):
             save_checkpoint(
                 model=model,
@@ -1310,6 +1442,8 @@ def main():
                 train_loss=last_train_loss,
                 val_loss=last_val_loss,
                 profile=args.mode,
+                target_tokens=target_tokens,
+                schedule_tokens=schedule_tokens,
             )
 
         governor.throttle()
@@ -1324,6 +1458,8 @@ def main():
         train_loss=last_train_loss,
         val_loss=last_val_loss,
         profile=args.mode,
+        target_tokens=target_tokens,
+        schedule_tokens=schedule_tokens,
     )
 
     print(
@@ -1332,7 +1468,7 @@ def main():
     )
 
     print(
-        "AMBER 0.1 PRETRAINING TARGET REACHED",
+        "AMBER 0.1 PRETRAINING STOP TARGET REACHED",
         flush=True
     )
 
