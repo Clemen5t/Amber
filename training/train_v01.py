@@ -40,6 +40,7 @@ if hasattr(sys.stderr, "reconfigure"):
 ROOT = Path(__file__).resolve().parents[1]
 CHECKPOINT_DIR = ROOT / "checkpoints"
 CHECKPOINT = CHECKPOINT_DIR / "amber_v01_latest.pt"
+STATUS_FILE = CHECKPOINT_DIR / "amber_v01_status.json"
 TEMP_CHECKPOINT = CHECKPOINT_DIR / "amber_v01_latest.tmp"
 STOP_FILE = ROOT / "training" / ".v01_stop_requested"
 PAUSE_FILE = ROOT / "training" / ".v01_pause_requested"
@@ -183,6 +184,52 @@ def learning_rate(
     )
 
 
+def write_status(
+    *,
+    step,
+    tokens_seen,
+    train_loss,
+    val_loss,
+    profile,
+    target_tokens=None,
+):
+    CHECKPOINT_DIR.mkdir(
+        parents=True,
+        exist_ok=True
+    )
+
+    payload = {
+        "version": "0.1.0",
+        "step": int(step),
+        "tokens_seen": int(tokens_seen),
+        "train_loss": (
+            float(train_loss)
+            if train_loss is not None
+            else None
+        ),
+        "val_loss": (
+            float(val_loss)
+            if val_loss is not None
+            else None
+        ),
+        "profile": profile,
+        "target_tokens": (
+            int(target_tokens)
+            if target_tokens is not None
+            else None
+        ),
+    }
+
+    STATUS_FILE.write_text(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            indent=2
+        ),
+        encoding="utf-8"
+    )
+
+
 def save_checkpoint(
     *,
     model,
@@ -228,6 +275,14 @@ def save_checkpoint(
 
     TEMP_CHECKPOINT.replace(
         CHECKPOINT
+    )
+
+    write_status(
+        step=step,
+        tokens_seen=tokens_seen,
+        train_loss=train_loss,
+        val_loss=val_loss,
+        profile=profile,
     )
 
     print(
