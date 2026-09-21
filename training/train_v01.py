@@ -5,6 +5,7 @@ import json
 import math
 import os
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -199,7 +200,7 @@ def write_status(
     )
 
     payload = {
-        "version": "0.1.2",
+        "version": "0.1.3",
         "step": int(step),
         "tokens_seen": int(tokens_seen),
         "train_loss": (
@@ -263,7 +264,7 @@ def save_checkpoint(
         return
 
     payload = {
-        "amber_version": "0.1.2",
+        "amber_version": "0.1.3",
         "config": config.to_dict(),
         "step": int(step),
         "tokens_seen": int(tokens_seen),
@@ -405,6 +406,29 @@ def load_checkpoint(
     )
 
     load_started = time.time()
+    load_done = threading.Event()
+
+    def checkpoint_heartbeat():
+        while not load_done.wait(5):
+            elapsed = (
+                time.time()
+                - load_started
+            )
+
+            print(
+                (
+                    "[V01] Chargement checkpoint toujours en cours... "
+                    f"{elapsed:.0f}s"
+                ),
+                flush=True
+            )
+
+    heartbeat_thread = threading.Thread(
+        target=checkpoint_heartbeat,
+        daemon=True
+    )
+
+    heartbeat_thread.start()
 
     try:
         payload = torch.load(
@@ -419,6 +443,9 @@ def load_checkpoint(
             map_location="cpu",
             weights_only=False,
         )
+
+    finally:
+        load_done.set()
 
     print(
         (
@@ -609,6 +636,15 @@ def main():
         default=100_000_000
     )
 
+    parser.add_argument(
+        "--fresh",
+        action="store_true",
+        help=(
+            "Ignore et archive un checkpoint local orphelin/0-token "
+            "avant de démarrer."
+        )
+    )
+
     args = parser.parse_args()
 
     metadata = load_cache_metadata()
@@ -704,6 +740,43 @@ def main():
         flush=True
     )
 
+    if args.fresh and CHECKPOINT.exists():
+        archive_name = (
+            "amber_v01_abandoned_"
+            + time.strftime("%Y%m%d_%H%M%S")
+            + ".pt"
+        )
+
+        archive_path = (
+            CHECKPOINT_DIR
+            / archive_name
+        )
+
+        try:
+            CHECKPOINT.replace(
+                archive_path
+            )
+
+            print(
+                (
+                    "[V01] Ancien checkpoint sans progression "
+                    f"archivé : {archive_name}"
+                ),
+                flush=True
+            )
+
+        except Exception as exc:
+            raise RuntimeError(
+                "Impossible d'archiver l'ancien checkpoint : "
+                + str(exc)
+            )
+
+        try:
+            if STATUS_FILE.exists():
+                STATUS_FILE.unlink()
+        except Exception:
+            pass
+
     state = load_checkpoint(
         model=model,
         optimizer=optimizer,
@@ -795,7 +868,7 @@ def main():
     )
 
     print(
-        "AMBER 0.1.2 PRETRAINER",
+        "AMBER 0.1.3 PRETRAINER",
         flush=True
     )
 
