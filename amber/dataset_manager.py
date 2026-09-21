@@ -86,7 +86,11 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def file_stats(path: Path) -> dict:
+def file_stats(
+    path: Path,
+    *,
+    detailed_limit_bytes: int = 64 * 1024 * 1024,
+) -> dict:
     path = Path(path)
 
     if not path.exists():
@@ -101,11 +105,34 @@ def file_stats(path: Path) -> dict:
             "words": 0,
             "sha256": None,
             "modified": None,
+            "details_skipped": False,
+        }
+
+    stat = path.stat()
+    size = stat.st_size
+
+    # Le Dataset Manager doit rester réactif même avec des corpus de plusieurs Go.
+    # Les statistiques détaillées sont donc calculées uniquement sur les fichiers
+    # raisonnablement petits. La taille reste toujours disponible.
+    if size > detailed_limit_bytes:
+        return {
+            "exists": True,
+            "path": str(path),
+            "size_bytes": size,
+            "size_human": format_bytes(size),
+            "characters": None,
+            "utf8_bytes": size,
+            "lines": None,
+            "words": None,
+            "sha256": None,
+            "modified": datetime.fromtimestamp(
+                stat.st_mtime
+            ).isoformat(timespec="seconds"),
+            "details_skipped": True,
         }
 
     raw = path.read_bytes()
     text = raw.decode("utf-8", errors="replace")
-    stat = path.stat()
 
     return {
         "exists": True,
@@ -120,6 +147,7 @@ def file_stats(path: Path) -> dict:
         "modified": datetime.fromtimestamp(
             stat.st_mtime
         ).isoformat(timespec="seconds"),
+        "details_skipped": False,
     }
 
 
