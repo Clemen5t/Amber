@@ -571,3 +571,60 @@ def default_v01_parameter_count(
     )
 
     return model.parameter_count()
+
+
+def estimate_v01_parameter_count(
+    config: AmberV01Config | None = None,
+):
+    config = config or AmberV01Config()
+
+    head_dim = (
+        config.d_model
+        // config.n_heads
+    )
+
+    kv_dim = (
+        config.n_kv_heads
+        * head_dim
+    )
+
+    embedding = (
+        config.vocab_size
+        * config.d_model
+    )
+
+    attention = (
+        config.d_model
+        * config.d_model
+        + 2
+        * config.d_model
+        * kv_dim
+        + config.d_model
+        * config.d_model
+    )
+
+    mlp = (
+        3
+        * config.d_model
+        * config.d_ff
+    )
+
+    norms = (
+        2
+        * config.d_model
+    )
+
+    per_layer = (
+        attention
+        + mlp
+        + norms
+    )
+
+    final_norm = config.d_model
+
+    return int(
+        embedding
+        + config.n_layers
+        * per_layer
+        + final_norm
+    )
