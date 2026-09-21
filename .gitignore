@@ -1,0 +1,24 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.tmp
+*.log
+
+# Model checkpoints / large generated files
+checkpoints/
+data/*
+!data/train.txt
+
+# Runtime control files
+training/.stop_requested
+training/.pause_requested
+
+# Updater backups
+backups/
+
+# Local/private updater settings
+updater_local.json
+
+# Old local backups
+*.bak_*
