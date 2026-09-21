@@ -8,6 +8,7 @@ import threading
 import tkinter as tk
 
 from pathlib import Path
+from datetime import datetime
 from tkinter import ttk, messagebox, filedialog
 from tkinter.scrolledtext import ScrolledText
 
@@ -102,7 +103,7 @@ class AmberApp(tk.Tk):
         super().__init__()
 
         self.title(
-            "Amber 0.1.0"
+            "Amber 0.1.1"
         )
 
         self.geometry(
@@ -334,7 +335,7 @@ class AmberApp(tk.Tk):
 
         ttk.Label(
             root,
-            text="AI Control Center · Amber Model 0.1.0",
+            text="AI Control Center · Amber Model 0.1.1",
             style="Subtitle.TLabel"
         ).pack(
             anchor="w",
@@ -529,6 +530,23 @@ class AmberApp(tk.Tk):
 
         self.log(
             "Amber Control Center 0.0.7 ready."
+        )
+
+    def _timestamp(self):
+        return datetime.now().strftime(
+            "%H:%M:%S"
+        )
+
+    def _timestamped_line(
+        self,
+        text
+    ):
+        if text == "":
+            return "\n"
+
+        return (
+            f"[{self._timestamp()}] "
+            f"{text}\n"
         )
 
     def _card(
@@ -1628,7 +1646,9 @@ class AmberApp(tk.Tk):
     ):
         self.dataset_status.insert(
             "end",
-            str(text) + "\n"
+            self._timestamped_line(
+                str(text)
+            )
         )
 
         self.dataset_status.see(
@@ -1641,7 +1661,9 @@ class AmberApp(tk.Tk):
     ):
         self.dataset_plan_text.insert(
             "end",
-            str(text) + "\n"
+            self._timestamped_line(
+                str(text)
+            )
         )
 
         self.dataset_plan_text.see(
@@ -2497,7 +2519,7 @@ class AmberApp(tk.Tk):
 
         ttk.Label(
             self.v01_tab,
-            text="Amber 0.1.0",
+            text="Amber 0.1.1",
             style="Title.TLabel"
         ).pack(
             anchor="w",
@@ -2723,7 +2745,9 @@ class AmberApp(tk.Tk):
     ):
         self.v01_console.insert(
             "end",
-            str(text) + "\n"
+            self._timestamped_line(
+                str(text)
+            )
         )
 
         self.v01_console.see(
@@ -3402,7 +3426,9 @@ class AmberApp(tk.Tk):
     ):
         self.console.insert(
             "end",
-            text + "\n"
+            self._timestamped_line(
+                text
+            )
         )
 
         self.console.see(
