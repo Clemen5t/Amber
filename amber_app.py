@@ -1763,6 +1763,13 @@ class AmberApp(tk.Tk):
 
     def estimate_dataset_plan(self):
 
+        if self.dataset_busy:
+            messagebox.showwarning(
+                "Amber Dataset Planner",
+                "Une tâche Dataset est déjà en cours."
+            )
+            return
+
         keys = self._dataset_selected_keys()
 
         if not keys:
@@ -1782,117 +1789,133 @@ class AmberApp(tk.Tk):
             )
             return
 
+        self.dataset_busy = True
+        self.dataset_cancel_event.clear()
+        self._dataset_progress(
+            "Estimation distante..."
+        )
+
         def worker():
-            return estimate_source_plan(
-                keys,
-                target_tokens=target_tokens
-            )
-
-        def done(
-            plan
-        ):
-            self.dataset_last_plan = plan
-
-            self.dataset_plan_text.delete(
-                "1.0",
-                "end"
-            )
-
-            self._dataset_plan_log(
-                (
-                    f"Cible : {plan['target_tokens_human']} tokens "
-                    f"(~{plan['estimated_text_human']} de texte)"
+            try:
+                plan = estimate_source_plan(
+                    keys,
+                    target_tokens=target_tokens
                 )
-            )
 
-            self._dataset_plan_log(
-                (
-                    f"Téléchargements connus restants : "
-                    f"{plan['known_remaining_human']}"
-                )
-            )
+                def finish():
+                    self.dataset_busy = False
+                    self.dataset_last_plan = plan
 
-            if plan["unknown_sizes"]:
-                self._dataset_plan_log(
-                    (
-                        f"Tailles distantes inconnues : "
-                        f"{plan['unknown_sizes']}"
+                    self.dataset_plan_text.delete(
+                        "1.0",
+                        "end"
                     )
-                )
 
-            self._dataset_plan_log(
-                (
-                    f"Espace libre recommandé : "
-                    f"{plan['recommended_free_human']}"
-                )
-            )
-
-            self._dataset_plan_log(
-                (
-                    f"Espace libre actuel : "
-                    f"{plan['disk_free_human']} "
-                    f"({'OK' if plan['disk_ok'] else 'INSUFFISANT'})"
-                )
-            )
-
-            self._dataset_plan_log(
-                ""
-            )
-
-            for item in plan["items"]:
-                self._dataset_plan_log(
-                    (
-                        f"- {item['name']} : "
-                        f"{item['size_human']} "
-                        f"(reste {item['remaining_human']})"
-                    )
-                )
-
-                self._dataset_plan_log(
-                    f"  Licence : {item['license']}"
-                )
-
-                if item.get("note"):
                     self._dataset_plan_log(
-                        f"  Note : {item['note']}"
+                        (
+                            f"Cible : {plan['target_tokens_human']} tokens "
+                            f"(~{plan['estimated_text_human']} de texte)"
+                        )
                     )
 
-            write_manifest(
-                planner=plan
-            )
+                    self._dataset_plan_log(
+                        (
+                            f"Téléchargements connus restants : "
+                            f"{plan['known_remaining_human']}"
+                        )
+                    )
 
-            return plan
+                    if plan["unknown_sizes"]:
+                        self._dataset_plan_log(
+                            (
+                                f"Tailles distantes inconnues : "
+                                f"{plan['unknown_sizes']}"
+                            )
+                        )
 
-        self._run_dataset_task(
-            "Estimation distante...",
-            worker,
-            lambda result: (
-                "Plan calculé. "
-                f"Espace recommandé : "
-                f"{result['recommended_free_human']}"
-            )
-        )
+                    self._dataset_plan_log(
+                        (
+                            f"Espace libre recommandé : "
+                            f"{plan['recommended_free_human']}"
+                        )
+                    )
 
-        # L'affichage détaillé doit être fait à la fin du thread.
-        def monitor():
-            if self.dataset_busy:
+                    self._dataset_plan_log(
+                        (
+                            f"Espace libre actuel : "
+                            f"{plan['disk_free_human']} "
+                            f"({'OK' if plan['disk_ok'] else 'INSUFFISANT'})"
+                        )
+                    )
+
+                    self._dataset_plan_log(
+                        ""
+                    )
+
+                    for item in plan["items"]:
+                        self._dataset_plan_log(
+                            (
+                                f"- {item['name']} : "
+                                f"{item['size_human']} "
+                                f"(reste {item['remaining_human']})"
+                            )
+                        )
+
+                        self._dataset_plan_log(
+                            f"  Licence : {item['license']}"
+                        )
+
+                        if item.get("note"):
+                            self._dataset_plan_log(
+                                f"  Note : {item['note']}"
+                            )
+
+                    write_manifest(
+                        planner=plan
+                    )
+
+                    self._dataset_progress(
+                        "Plan calculé"
+                    )
+
+                    self._dataset_log(
+                        (
+                            "Plan calculé : espace recommandé "
+                            f"{plan['recommended_free_human']}."
+                        )
+                    )
+
+                    self.refresh_dataset()
+
                 self.after(
-                    250,
-                    monitor
+                    0,
+                    finish
                 )
-                return
 
-            if self.dataset_last_plan is None:
-                try:
-                    plan = worker()
-                    done(plan)
-                except Exception:
-                    pass
+            except Exception as exc:
 
-        self.after(
-            300,
-            monitor
-        )
+                def fail():
+                    self.dataset_busy = False
+                    self._dataset_progress(
+                        "Erreur d'estimation"
+                    )
+                    self._dataset_log(
+                        f"[ERREUR] {exc}"
+                    )
+                    messagebox.showerror(
+                        "Amber Dataset Planner",
+                        str(exc)
+                    )
+
+                self.after(
+                    0,
+                    fail
+                )
+
+        threading.Thread(
+            target=worker,
+            daemon=True
+        ).start()
 
     def download_selected_datasets(self):
 
