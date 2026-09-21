@@ -490,6 +490,7 @@ def save_checkpoint(
     examples,
     blocks,
     profile,
+    epoch_complete=False,
 ):
     CHECKPOINT_DIR.mkdir(
         parents=True,
@@ -505,6 +506,14 @@ def save_checkpoint(
         ),
         "epochs": int(
             epochs
+        ),
+        "completed_epochs": int(
+            epoch
+            if epoch_complete
+            else max(
+                0,
+                epoch - 1
+            )
         ),
         "step": int(
             step
@@ -544,12 +553,13 @@ def save_checkpoint(
         examples=examples,
         blocks=blocks,
         profile=profile,
+        epoch_complete=epoch_complete,
     )
 
     print(
         (
             "[TEACHER CHECKPOINT] "
-            f"epoch={epoch}/{session_last_epoch} | "
+            f"epoch={epoch}/{epochs} | "
             f"step={step:,}"
         ),
         flush=True,
