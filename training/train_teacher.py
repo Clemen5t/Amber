@@ -18,6 +18,7 @@ from amber.model_v01 import (
 )
 from teacher.curriculum import (
     TRAIN_FILE,
+    REMEDIAL_FILE,
 )
 from tokenizer.amber_bpe import AmberBPETokenizer
 from training.governor import TrainingGovernor
@@ -688,10 +689,26 @@ def main():
         TRAIN_FILE
     )
 
+    remedial_count = 0
+
+    if REMEDIAL_FILE.exists():
+        remedial = load_jsonl(
+            REMEDIAL_FILE
+        )
+
+        remedial_count = len(
+            remedial
+        )
+
+        examples.extend(
+            remedial
+        )
+
     print(
         (
             "[TEACHER] Cours chargés : "
-            f"{len(examples):,} exemples."
+            f"{len(examples):,} exemples "
+            f"(dont {remedial_count:,} rattrapage)."
         ),
         flush=True,
     )
