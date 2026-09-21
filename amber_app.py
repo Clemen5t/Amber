@@ -17,12 +17,16 @@ from amber.dataset_manager import (
     SOURCE_CATALOG,
     PREPARED_TRAIN_FILE,
     PREPARED_VALIDATION_FILE,
+    MANIFEST_FILE,
+    DownloadCancelled,
     dataset_stats,
     file_stats,
     format_bytes,
+    format_tokens,
     import_local_file,
     download_source,
-    download_catalog_source,
+    download_catalog_sources,
+    estimate_source_plan,
     list_raw_sources,
     prepare_dataset,
     write_manifest,
@@ -67,7 +71,7 @@ class AmberApp(tk.Tk):
         super().__init__()
 
         self.title(
-            "Amber 0.0.6"
+            "Amber 0.0.7"
         )
 
         self.geometry(
@@ -103,6 +107,7 @@ class AmberApp(tk.Tk):
 
         self.paused = False
         self.dataset_busy = False
+        self.dataset_cancel_event = threading.Event()
 
         self._style()
         self._build_ui()
@@ -289,7 +294,7 @@ class AmberApp(tk.Tk):
 
         ttk.Label(
             root,
-            text="AI Control Center · Amber Model 0.0.6",
+            text="AI Control Center · Amber Model 0.0.7",
             style="Subtitle.TLabel"
         ).pack(
             anchor="w",
@@ -473,7 +478,7 @@ class AmberApp(tk.Tk):
         )
 
         self.log(
-            "Amber Control Center 0.0.6 ready."
+            "Amber Control Center 0.0.7 ready."
         )
 
     def _card(
@@ -1214,33 +1219,38 @@ class AmberApp(tk.Tk):
             value=""
         )
 
-        self.dataset_catalog = tk.StringVar(
-            value=next(iter(SOURCE_CATALOG.keys()))
+        self.dataset_target_tokens = tk.StringVar(
+            value="100000000"
         )
 
         self.tokenizer_vocab_size = tk.StringVar(
             value="32000"
         )
 
+        self.dataset_last_plan = None
+        self.dataset_catalog_keys = list(
+            SOURCE_CATALOG.keys()
+        )
+
         ttk.Label(
             self.dataset_tab,
-            text="Dataset Manager 0.0.6",
+            text="Dataset Planner 0.0.7",
             style="Title.TLabel"
         ).pack(
             anchor="w",
-            pady=(20, 5)
+            pady=(16, 3)
         )
 
         ttk.Label(
             self.dataset_tab,
             text=(
-                "Collecte, nettoyage, déduplication, split train/validation "
-                "et entraînement du tokenizer Amber."
+                "Planifie le corpus Amber 0.1 avant de télécharger : "
+                "taille, espace disque, licences et objectif de tokens."
             ),
             style="Subtitle.TLabel"
         ).pack(
             anchor="w",
-            pady=(0, 15)
+            pady=(0, 10)
         )
 
         cards = ttk.Frame(
@@ -1249,22 +1259,17 @@ class AmberApp(tk.Tk):
 
         cards.pack(
             fill="x",
-            pady=(0, 14)
-        )
-
-        self.dataset_seed_value = self._card(
-            cards,
-            "SEED"
+            pady=(0, 10)
         )
 
         self.dataset_sources_value = self._card(
             cards,
-            "SOURCES"
+            "SOURCES LOCALES"
         )
 
         self.dataset_train_value = self._card(
             cards,
-            "TRAIN PRÉPARÉ"
+            "TRAIN"
         )
 
         self.dataset_validation_value = self._card(
@@ -1277,197 +1282,101 @@ class AmberApp(tk.Tk):
             "TOKENIZER"
         )
 
-        source_box = ttk.Frame(
+        self.dataset_target_value = self._card(
+            cards,
+            "CIBLE"
+        )
+
+        planner = ttk.Frame(
             self.dataset_tab
         )
 
-        source_box.pack(
+        planner.pack(
             fill="x",
-            pady=6
-        )
-
-        ttk.Button(
-            source_box,
-            text="Importer fichiers",
-            command=self.import_dataset_files
-        ).pack(
-            side="left",
-            padx=(0, 8)
-        )
-
-        catalog_values = [
-            key
-            for key in SOURCE_CATALOG.keys()
-        ]
-
-        self.catalog_combo = ttk.Combobox(
-            source_box,
-            textvariable=self.dataset_catalog,
-            values=catalog_values,
-            state="readonly",
-            width=24
-        )
-
-        self.catalog_combo.pack(
-            side="left",
-            padx=8
-        )
-
-        ttk.Button(
-            source_box,
-            text="Télécharger preset",
-            command=self.download_catalog_dataset
-        ).pack(
-            side="left",
-            padx=8
-        )
-
-        custom = ttk.Frame(
-            self.dataset_tab
-        )
-
-        custom.pack(
-            fill="x",
-            pady=6
-        )
-
-        ttk.Entry(
-            custom,
-            textvariable=self.dataset_url
-        ).pack(
-            side="left",
-            fill="x",
-            expand=True,
-            padx=(0, 8)
-        )
-
-        ttk.Button(
-            custom,
-            text="Télécharger URL",
-            command=self.download_custom_dataset
-        ).pack(
-            side="left"
-        )
-
-        pipeline = ttk.Frame(
-            self.dataset_tab
-        )
-
-        pipeline.pack(
-            fill="x",
-            pady=(12, 6)
-        )
-
-        ttk.Button(
-            pipeline,
-            text="Préparer dataset",
-            command=self.prepare_dataset_ui
-        ).pack(
-            side="left",
-            padx=(0, 8)
-        )
-
-        ttk.Label(
-            pipeline,
-            text="Vocab :"
-        ).pack(
-            side="left",
-            padx=(12, 4)
-        )
-
-        ttk.Entry(
-            pipeline,
-            textvariable=self.tokenizer_vocab_size,
-            width=10
-        ).pack(
-            side="left",
-            padx=(0, 8)
-        )
-
-        ttk.Button(
-            pipeline,
-            text="Entraîner tokenizer",
-            command=self.train_tokenizer_ui
-        ).pack(
-            side="left",
-            padx=8
-        )
-
-        ttk.Button(
-            pipeline,
-            text="Créer manifest",
-            command=self.create_dataset_manifest
-        ).pack(
-            side="left",
-            padx=8
-        )
-
-        ttk.Button(
-            pipeline,
-            text="Ouvrir data",
-            command=lambda: os.startfile(
-                DATA_DIR
-            )
-        ).pack(
-            side="left",
-            padx=8
-        )
-
-        self.dataset_progress_label = ttk.Label(
-            self.dataset_tab,
-            text="Prêt"
-        )
-
-        self.dataset_progress_label.pack(
-            anchor="w",
-            pady=(8, 4)
-        )
-
-        lower = ttk.Frame(
-            self.dataset_tab
-        )
-
-        lower.pack(
-            fill="both",
-            expand=True,
-            pady=(4, 0)
+            pady=4
         )
 
         left = ttk.Frame(
-            lower
+            planner
         )
 
         left.pack(
             side="left",
-            fill="both",
-            expand=False,
+            fill="y",
             padx=(0, 10)
         )
 
         ttk.Label(
             left,
-            text="Sources locales"
+            text="Corpus officiels sélectionnables"
         ).pack(
             anchor="w",
             pady=(0, 4)
         )
 
-        self.dataset_source_list = tk.Listbox(
+        self.dataset_catalog_list = tk.Listbox(
             left,
+            selectmode="extended",
+            exportselection=False,
             bg="#0b0b0f",
             fg="#ffffff",
+            selectbackground="#34343e",
+            selectforeground="#ffb347",
             relief="flat",
-            font=("Consolas", 9),
-            width=43
+            font=("Segoe UI", 9),
+            width=48,
+            height=6
         )
 
-        self.dataset_source_list.pack(
+        self.dataset_catalog_list.pack(
             fill="both",
             expand=True
         )
 
+        for key in self.dataset_catalog_keys:
+            source = SOURCE_CATALOG[key]
+
+            self.dataset_catalog_list.insert(
+                "end",
+                source["name"]
+            )
+
+        target_box = ttk.Frame(
+            left
+        )
+
+        target_box.pack(
+            fill="x",
+            pady=(6, 0)
+        )
+
+        ttk.Label(
+            target_box,
+            text="Objectif tokens :"
+        ).pack(
+            side="left"
+        )
+
+        ttk.Entry(
+            target_box,
+            textvariable=self.dataset_target_tokens,
+            width=14
+        ).pack(
+            side="left",
+            padx=6
+        )
+
+        ttk.Button(
+            target_box,
+            text="Estimer",
+            command=self.estimate_dataset_plan
+        ).pack(
+            side="left",
+            padx=4
+        )
+
         right = ttk.Frame(
-            lower
+            planner
         )
 
         right.pack(
@@ -1478,28 +1387,190 @@ class AmberApp(tk.Tk):
 
         ttk.Label(
             right,
-            text="Journal Dataset"
+            text="Plan / licences"
         ).pack(
             anchor="w",
             pady=(0, 4)
         )
 
-        self.dataset_status = ScrolledText(
+        self.dataset_plan_text = ScrolledText(
             right,
             bg="#0b0b0f",
             fg="#e5e5ea",
             insertbackground="white",
             relief="flat",
             font=("Consolas", 9),
-            height=15
+            height=8
         )
 
-        self.dataset_status.pack(
+        self.dataset_plan_text.pack(
             fill="both",
             expand=True
         )
 
+        action_row = ttk.Frame(
+            self.dataset_tab
+        )
+
+        action_row.pack(
+            fill="x",
+            pady=(8, 4)
+        )
+
+        ttk.Button(
+            action_row,
+            text="Importer fichiers",
+            command=self.import_dataset_files
+        ).pack(
+            side="left",
+            padx=(0, 6)
+        )
+
+        ttk.Button(
+            action_row,
+            text="Télécharger sélection",
+            command=self.download_selected_datasets
+        ).pack(
+            side="left",
+            padx=6
+        )
+
+        ttk.Button(
+            action_row,
+            text="Annuler tâche",
+            command=self.cancel_dataset_task
+        ).pack(
+            side="left",
+            padx=6
+        )
+
+        ttk.Button(
+            action_row,
+            text="Préparer dataset",
+            command=self.prepare_dataset_ui
+        ).pack(
+            side="left",
+            padx=6
+        )
+
+        ttk.Button(
+            action_row,
+            text="Préparer Amber 0.1",
+            command=self.prepare_amber_01
+        ).pack(
+            side="left",
+            padx=6
+        )
+
+        custom = ttk.Frame(
+            self.dataset_tab
+        )
+
+        custom.pack(
+            fill="x",
+            pady=4
+        )
+
+        ttk.Entry(
+            custom,
+            textvariable=self.dataset_url
+        ).pack(
+            side="left",
+            fill="x",
+            expand=True,
+            padx=(0, 6)
+        )
+
+        ttk.Button(
+            custom,
+            text="Télécharger URL",
+            command=self.download_custom_dataset
+        ).pack(
+            side="left",
+            padx=4
+        )
+
+        ttk.Label(
+            custom,
+            text="Vocab :"
+        ).pack(
+            side="left",
+            padx=(12, 4)
+        )
+
+        ttk.Entry(
+            custom,
+            textvariable=self.tokenizer_vocab_size,
+            width=9
+        ).pack(
+            side="left",
+            padx=(0, 4)
+        )
+
+        ttk.Button(
+            custom,
+            text="Entraîner tokenizer",
+            command=self.train_tokenizer_ui
+        ).pack(
+            side="left",
+            padx=4
+        )
+
+        self.dataset_progress_label = ttk.Label(
+            self.dataset_tab,
+            text="Prêt"
+        )
+
+        self.dataset_progress_label.pack(
+            anchor="w",
+            pady=(6, 2)
+        )
+
+        self.dataset_status = ScrolledText(
+            self.dataset_tab,
+            bg="#0b0b0f",
+            fg="#e5e5ea",
+            insertbackground="white",
+            relief="flat",
+            font=("Consolas", 9),
+            height=9
+        )
+
+        self.dataset_status.pack(
+            fill="both",
+            expand=True,
+            pady=(2, 0)
+        )
+
         self.refresh_dataset()
+
+    def _dataset_selected_keys(self):
+
+        return [
+            self.dataset_catalog_keys[index]
+            for index in self.dataset_catalog_list.curselection()
+        ]
+
+    def _dataset_target_tokens_value(self):
+
+        value = self.dataset_target_tokens.get().strip()
+
+        try:
+            tokens = int(
+                value
+            )
+
+        except ValueError:
+            raise ValueError(
+                "L'objectif tokens doit être un nombre entier."
+            )
+
+        if tokens < 1_000_000:
+            raise ValueError(
+                "Utilise au moins 1 000 000 tokens pour le Planner."
+            )
+
+        return tokens
 
     def _dataset_log(
         self,
@@ -1511,6 +1582,19 @@ class AmberApp(tk.Tk):
         )
 
         self.dataset_status.see(
+            "end"
+        )
+
+    def _dataset_plan_log(
+        self,
+        text
+    ):
+        self.dataset_plan_text.insert(
+            "end",
+            str(text) + "\n"
+        )
+
+        self.dataset_plan_text.see(
             "end"
         )
 
@@ -1536,6 +1620,8 @@ class AmberApp(tk.Tk):
             return
 
         self.dataset_busy = True
+        self.dataset_cancel_event.clear()
+
         self._dataset_progress(
             label
         )
@@ -1553,6 +1639,7 @@ class AmberApp(tk.Tk):
                             if callable(done_message)
                             else str(done_message)
                         )
+
                         self._dataset_log(
                             message
                         )
@@ -1566,6 +1653,26 @@ class AmberApp(tk.Tk):
                 self.after(
                     0,
                     finish
+                )
+
+            except DownloadCancelled as exc:
+
+                def cancelled():
+                    self.dataset_busy = False
+
+                    self._dataset_progress(
+                        "Annulé — reprise possible"
+                    )
+
+                    self._dataset_log(
+                        str(exc)
+                    )
+
+                    self.refresh_dataset()
+
+                self.after(
+                    0,
+                    cancelled
                 )
 
             except Exception as exc:
@@ -1596,6 +1703,20 @@ class AmberApp(tk.Tk):
             daemon=True
         ).start()
 
+    def cancel_dataset_task(self):
+
+        if not self.dataset_busy:
+            self._dataset_progress(
+                "Aucune tâche à annuler"
+            )
+            return
+
+        self.dataset_cancel_event.set()
+
+        self._dataset_progress(
+            "Annulation demandée..."
+        )
+
     def import_dataset_files(self):
 
         files = filedialog.askopenfilenames(
@@ -1619,6 +1740,11 @@ class AmberApp(tk.Tk):
             imported = []
 
             for path in files:
+                if self.dataset_cancel_event.is_set():
+                    raise DownloadCancelled(
+                        "Import annulé."
+                    )
+
                 imported.append(
                     import_local_file(
                         path
@@ -1632,6 +1758,224 @@ class AmberApp(tk.Tk):
             worker,
             lambda result: (
                 f"{len(result)} source(s) importée(s)."
+            )
+        )
+
+    def estimate_dataset_plan(self):
+
+        keys = self._dataset_selected_keys()
+
+        if not keys:
+            messagebox.showwarning(
+                "Amber Dataset Planner",
+                "Sélectionne au moins un corpus."
+            )
+            return
+
+        try:
+            target_tokens = self._dataset_target_tokens_value()
+
+        except ValueError as exc:
+            messagebox.showerror(
+                "Amber Dataset Planner",
+                str(exc)
+            )
+            return
+
+        def worker():
+            return estimate_source_plan(
+                keys,
+                target_tokens=target_tokens
+            )
+
+        def done(
+            plan
+        ):
+            self.dataset_last_plan = plan
+
+            self.dataset_plan_text.delete(
+                "1.0",
+                "end"
+            )
+
+            self._dataset_plan_log(
+                (
+                    f"Cible : {plan['target_tokens_human']} tokens "
+                    f"(~{plan['estimated_text_human']} de texte)"
+                )
+            )
+
+            self._dataset_plan_log(
+                (
+                    f"Téléchargements connus restants : "
+                    f"{plan['known_remaining_human']}"
+                )
+            )
+
+            if plan["unknown_sizes"]:
+                self._dataset_plan_log(
+                    (
+                        f"Tailles distantes inconnues : "
+                        f"{plan['unknown_sizes']}"
+                    )
+                )
+
+            self._dataset_plan_log(
+                (
+                    f"Espace libre recommandé : "
+                    f"{plan['recommended_free_human']}"
+                )
+            )
+
+            self._dataset_plan_log(
+                (
+                    f"Espace libre actuel : "
+                    f"{plan['disk_free_human']} "
+                    f"({'OK' if plan['disk_ok'] else 'INSUFFISANT'})"
+                )
+            )
+
+            self._dataset_plan_log(
+                ""
+            )
+
+            for item in plan["items"]:
+                self._dataset_plan_log(
+                    (
+                        f"- {item['name']} : "
+                        f"{item['size_human']} "
+                        f"(reste {item['remaining_human']})"
+                    )
+                )
+
+                self._dataset_plan_log(
+                    f"  Licence : {item['license']}"
+                )
+
+                if item.get("note"):
+                    self._dataset_plan_log(
+                        f"  Note : {item['note']}"
+                    )
+
+            write_manifest(
+                planner=plan
+            )
+
+            return plan
+
+        self._run_dataset_task(
+            "Estimation distante...",
+            worker,
+            lambda result: (
+                "Plan calculé. "
+                f"Espace recommandé : "
+                f"{result['recommended_free_human']}"
+            )
+        )
+
+        # L'affichage détaillé doit être fait à la fin du thread.
+        def monitor():
+            if self.dataset_busy:
+                self.after(
+                    250,
+                    monitor
+                )
+                return
+
+            if self.dataset_last_plan is None:
+                try:
+                    plan = worker()
+                    done(plan)
+                except Exception:
+                    pass
+
+        self.after(
+            300,
+            monitor
+        )
+
+    def download_selected_datasets(self):
+
+        keys = self._dataset_selected_keys()
+
+        if not keys:
+            messagebox.showwarning(
+                "Amber Dataset Manager",
+                "Sélectionne au moins un corpus."
+            )
+            return
+
+        source_lines = []
+
+        for key in keys:
+            source = SOURCE_CATALOG[key]
+
+            source_lines.append(
+                (
+                    f"• {source['name']}\n"
+                    f"  {source['license']}"
+                )
+            )
+
+        if not messagebox.askyesno(
+            "Amber Dataset Manager",
+            (
+                "Télécharger les corpus sélectionnés ?\n\n"
+                + "\n".join(source_lines)
+                + "\n\nLes téléchargements interrompus "
+                "peuvent reprendre grâce aux fichiers .part."
+            )
+        ):
+            return
+
+        def progress(
+            info
+        ):
+            downloaded = info.get(
+                "downloaded",
+                0
+            )
+
+            total = info.get(
+                "total"
+            )
+
+            if total:
+                percent = (
+                    downloaded / total
+                ) * 100
+
+                text = (
+                    f"{info['index']}/{info['count']} "
+                    f"{info['name']} : "
+                    f"{format_bytes(downloaded)} / "
+                    f"{format_bytes(total)} "
+                    f"({percent:.1f} %)"
+                )
+
+            else:
+                text = (
+                    f"{info['index']}/{info['count']} "
+                    f"{info['name']} : "
+                    f"{format_bytes(downloaded)}"
+                )
+
+            self.after(
+                0,
+                lambda value=text: self._dataset_progress(
+                    value
+                )
+            )
+
+        self._run_dataset_task(
+            "Téléchargement...",
+            lambda: download_catalog_sources(
+                keys,
+                progress_callback=progress,
+                cancel_event=self.dataset_cancel_event
+            ),
+            lambda result: (
+                f"{len(result)} corpus téléchargé(s)/déjà présent(s)."
             )
         )
 
@@ -1650,8 +1994,8 @@ class AmberApp(tk.Tk):
             "Amber Dataset Manager",
             (
                 "Télécharger cette source ?\n\n"
-                "Vérifie que tu as le droit de l'utiliser "
-                "pour l'entraînement."
+                "Vérifie toi-même que la licence autorise "
+                "l'utilisation prévue."
             )
         ):
             return
@@ -1671,6 +2015,7 @@ class AmberApp(tk.Tk):
                     f"{format_bytes(total)} "
                     f"({percent:.1f} %)"
                 )
+
             else:
                 text = (
                     "Téléchargement : "
@@ -1685,10 +2030,12 @@ class AmberApp(tk.Tk):
             )
 
         self._run_dataset_task(
-            "Téléchargement...",
+            "Téléchargement URL...",
             lambda: download_source(
                 url,
-                progress_callback=progress
+                progress_callback=progress,
+                cancel_event=self.dataset_cancel_event,
+                resume=True
             ),
             lambda result: (
                 f"Téléchargé : {result['name']} "
@@ -1696,75 +2043,25 @@ class AmberApp(tk.Tk):
             )
         )
 
-    def download_catalog_dataset(self):
-
-        key = self.dataset_catalog.get()
-
-        source = SOURCE_CATALOG.get(
-            key
-        )
-
-        if not source:
-            return
-
-        details = (
-            f"{source['name']}\n\n"
-            f"{source.get('note', '')}\n\n"
-            f"Licence indiquée : "
-            f"{source.get('license', 'à vérifier')}\n\n"
-            "Ce téléchargement peut être très volumineux. Continuer ?"
-        )
-
-        if not messagebox.askyesno(
-            "Amber Dataset Manager",
-            details
-        ):
-            return
-
-        def progress(
-            downloaded,
-            total
-        ):
-            if total:
-                text = (
-                    f"Téléchargement preset : "
-                    f"{format_bytes(downloaded)} / "
-                    f"{format_bytes(total)} "
-                    f"({downloaded / total * 100:.1f} %)"
-                )
-            else:
-                text = (
-                    "Téléchargement preset : "
-                    f"{format_bytes(downloaded)}"
-                )
-
-            self.after(
-                0,
-                lambda value=text: self._dataset_progress(
-                    value
-                )
-            )
-
-        self._run_dataset_task(
-            "Téléchargement preset...",
-            lambda: download_catalog_source(
-                key,
-                progress_callback=progress
-            ),
-            lambda result: (
-                f"Preset téléchargé : {result['name']} "
-                f"({result['size_human']})"
-            )
-        )
-
     def prepare_dataset_ui(self):
+
+        try:
+            target_tokens = self._dataset_target_tokens_value()
+
+        except ValueError as exc:
+            messagebox.showerror(
+                "Amber Dataset Manager",
+                str(exc)
+            )
+            return
 
         if not messagebox.askyesno(
             "Amber Dataset Manager",
             (
                 "Préparer le dataset ?\n\n"
-                "Amber va nettoyer les textes, supprimer les doublons "
-                "et créer un split train/validation 98/2."
+                "Amber va nettoyer les textes, dédupliquer, "
+                "créer le split train/validation 98/2 et viser "
+                f"environ {format_tokens(target_tokens)} tokens."
             )
         ):
             return
@@ -1772,23 +2069,17 @@ class AmberApp(tk.Tk):
         def progress(
             info
         ):
-            stage = info.get(
-                "stage",
-                ""
+            approx_tokens = info.get(
+                "approx_tokens",
+                0
             )
 
-            if stage == "source":
-                text = (
-                    f"Préparation : {info.get('source')} "
-                    f"({info.get('source_index')}/"
-                    f"{info.get('source_count')})"
-                )
-            else:
-                text = (
-                    "Préparation : "
-                    f"{info.get('train_docs', 0):,} train / "
-                    f"{info.get('validation_docs', 0):,} validation"
-                )
+            text = (
+                f"Préparation : "
+                f"{format_tokens(approx_tokens)} tokens approx. | "
+                f"{info.get('train_docs', 0):,} train | "
+                f"{info.get('validation_docs', 0):,} validation"
+            )
 
             self.after(
                 0,
@@ -1800,13 +2091,15 @@ class AmberApp(tk.Tk):
         self._run_dataset_task(
             "Préparation dataset...",
             lambda: prepare_dataset(
-                progress_callback=progress
+                target_tokens=target_tokens,
+                progress_callback=progress,
+                cancel_event=self.dataset_cancel_event
             ),
             lambda result: (
                 "Dataset prêt : "
+                f"~{result['approx_tokens_human']} tokens, "
                 f"{result['train_docs']:,} docs train, "
-                f"{result['validation_docs']:,} docs validation, "
-                f"{result['skipped']:,} ignorés/doublons."
+                f"{result['validation_docs']:,} validation."
             )
         )
 
@@ -1816,6 +2109,7 @@ class AmberApp(tk.Tk):
             vocab_size = int(
                 self.tokenizer_vocab_size.get()
             )
+
         except ValueError:
             messagebox.showerror(
                 "Amber Tokenizer",
@@ -1863,10 +2157,117 @@ class AmberApp(tk.Tk):
             )
         )
 
+    def prepare_amber_01(self):
+
+        sources = list_raw_sources()
+
+        if not sources:
+            messagebox.showwarning(
+                "Préparer Amber 0.1",
+                (
+                    "Ajoute d'abord au moins une vraie source. "
+                    "Le seed de 3,9 KB ne suffit pas pour Amber 0.1."
+                )
+            )
+            return
+
+        try:
+            target_tokens = self._dataset_target_tokens_value()
+
+        except ValueError as exc:
+            messagebox.showerror(
+                "Préparer Amber 0.1",
+                str(exc)
+            )
+            return
+
+        if not messagebox.askyesno(
+            "Préparer Amber 0.1",
+            (
+                "Lancer le pipeline Amber 0.1 ?\n\n"
+                f"Objectif : ~{format_tokens(target_tokens)} tokens\n"
+                "1. Nettoyage + déduplication\n"
+                "2. Split train/validation\n"
+                "3. Tokenizer BPE 32k entraîné depuis zéro\n"
+                "4. Manifest de préparation\n\n"
+                "Cette étape peut être longue."
+            )
+        ):
+            return
+
+        self.tokenizer_vocab_size.set(
+            "32000"
+        )
+
+        def worker():
+
+            def prep_progress(
+                info
+            ):
+                approx_tokens = info.get(
+                    "approx_tokens",
+                    0
+                )
+
+                self.after(
+                    0,
+                    lambda value=(
+                        f"Amber 0.1 — dataset : "
+                        f"{format_tokens(approx_tokens)} tokens approx."
+                    ): self._dataset_progress(
+                        value
+                    )
+                )
+
+            prepared = prepare_dataset(
+                target_tokens=target_tokens,
+                progress_callback=prep_progress,
+                cancel_event=self.dataset_cancel_event
+            )
+
+            if self.dataset_cancel_event.is_set():
+                raise DownloadCancelled(
+                    "Pipeline Amber 0.1 annulé."
+                )
+
+            self.after(
+                0,
+                lambda: self._dataset_progress(
+                    "Amber 0.1 — entraînement tokenizer 32k..."
+                )
+            )
+
+            tokenizer = train_amber_tokenizer(
+                vocab_size=32000
+            )
+
+            manifest = write_manifest(
+                prepared=prepared,
+                planner=self.dataset_last_plan
+            )
+
+            return {
+                "prepared": prepared,
+                "tokenizer": tokenizer,
+                "manifest": manifest,
+            }
+
+        self._run_dataset_task(
+            "Préparation Amber 0.1...",
+            worker,
+            lambda result: (
+                "Amber 0.1 prêt côté données : "
+                f"~{result['prepared']['approx_tokens_human']} tokens, "
+                f"tokenizer {result['tokenizer']['actual_vocab_size']:,}."
+            )
+        )
+
     def create_dataset_manifest(self):
 
         try:
-            manifest = write_manifest()
+            manifest = write_manifest(
+                planner=self.dataset_last_plan
+            )
 
             self._dataset_log(
                 "Manifest créé : data/dataset_manifest.json"
@@ -1886,21 +2287,17 @@ class AmberApp(tk.Tk):
 
     def refresh_dataset(self):
 
-        seed = dataset_stats()
         sources = list_raw_sources()
+
         prepared_train = file_stats(
             PREPARED_TRAIN_FILE
         )
+
         prepared_validation = file_stats(
             PREPARED_VALIDATION_FILE
         )
-        tok = tokenizer_status()
 
-        self.dataset_seed_value.config(
-            text=seed["size_human"]
-            if seed["exists"]
-            else "-"
-        )
+        tok = tokenizer_status()
 
         total_source_size = sum(
             item["size_bytes"]
@@ -1938,25 +2335,19 @@ class AmberApp(tk.Tk):
             )
         )
 
-        self.dataset_source_list.delete(
-            0,
-            "end"
-        )
+        try:
+            target_tokens = self._dataset_target_tokens_value()
 
-        if not sources:
-            self.dataset_source_list.insert(
-                "end",
-                "Aucune source dans data/raw"
-            )
-        else:
-            for source in sources:
-                self.dataset_source_list.insert(
-                    "end",
-                    (
-                        f"{source['name']}  "
-                        f"[{source['size_human']}]"
-                    )
+            self.dataset_target_value.config(
+                text=format_tokens(
+                    target_tokens
                 )
+            )
+
+        except Exception:
+            self.dataset_target_value.config(
+                text="-"
+            )
 
         self.dataset_status.delete(
             "1.0",
@@ -1964,29 +2355,16 @@ class AmberApp(tk.Tk):
         )
 
         self._dataset_log(
-            "AMBER DATASET MANAGER 0.0.6"
+            "AMBER DATASET PLANNER 0.0.7"
         )
 
         self._dataset_log(
-            "=" * 52
+            "=" * 56
         )
-
-        if seed["exists"]:
-            self._dataset_log(
-                (
-                    f"Seed historique : "
-                    f"{seed['characters']:,} caractères "
-                    f"({seed['size_human']})"
-                )
-            )
-        else:
-            self._dataset_log(
-                "Seed historique : absent"
-            )
 
         self._dataset_log(
             (
-                f"Sources brutes : {len(sources)} "
+                f"Sources locales : {len(sources)} "
                 f"({format_bytes(total_source_size)})"
             )
         )
@@ -2020,6 +2398,7 @@ class AmberApp(tk.Tk):
                     f"{tok['vocab_size']:,} tokens"
                 )
             )
+
         else:
             self._dataset_log(
                 "Tokenizer Amber : non entraîné"
@@ -2030,23 +2409,11 @@ class AmberApp(tk.Tk):
         )
 
         self._dataset_log(
-            "Ordre recommandé :"
+            "Les téléchargements .part sont repris automatiquement."
         )
 
         self._dataset_log(
-            "1. Importer/télécharger des sources autorisées"
-        )
-
-        self._dataset_log(
-            "2. Préparer dataset"
-        )
-
-        self._dataset_log(
-            "3. Entraîner tokenizer"
-        )
-
-        self._dataset_log(
-            "4. Amber 0.1 utilisera ces artefacts"
+            "L'objectif tokens reste une estimation avant encodage BPE exact."
         )
 
     # ========================================================
